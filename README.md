@@ -8,12 +8,15 @@ string) and adds what stock HolyC never had: methods that belong to a
 class, an implicit this inside them, constructors, and single
 inheritance with real virtual dispatch.
 
-Full details live under docs/: if this is your first HolyC++ program,
-start with docs/tutorial.md, a guided walkthrough of runnable
-examples. docs/language_spec.md is the full language reference,
-docs/grammar.md has the formal EBNF grammar, docs/stdlib.md documents
-every builtin function, and docs/differences_from_holyc.md covers
-exactly what changed from stock HolyC and why.
+Full details live under [docs/](docs/): if this is your first HolyC++
+program, start with [docs/tutorial.md](docs/tutorial.md), a guided
+walkthrough of runnable examples.
+[docs/language_spec.md](docs/language_spec.md) is the full language
+reference, [docs/grammar.md](docs/grammar.md) has the formal EBNF
+grammar, [docs/stdlib.md](docs/stdlib.md) documents every builtin
+function, and
+[docs/differences_from_holyc.md](docs/differences_from_holyc.md)
+covers exactly what changed from stock HolyC and why.
 
 ## Where this actually runs
 
@@ -54,7 +57,7 @@ an extra argument:
 The self hosted compiler does not yet resolve import statements
 inside the program it is running, use hcrun directly for programs
 that span multiple files until that lands, see
-docs/differences_from_holyc.md.
+[docs/differences_from_holyc.md](docs/differences_from_holyc.md).
 
 ## Testing
 
@@ -104,18 +107,19 @@ and that the self hosted compiler produces the exact same output too.
 
 Running this prints "Rex says Woof", not "Rex makes a sound", even
 though a is declared as a plain Animal: method dispatch always follows
-the object's real class. See docs/classes.md for the details, or
-docs/tutorial.md for more worked examples like this one.
+the object's real class. See [docs/classes.md](docs/classes.md) for
+the details, or [docs/tutorial.md](docs/tutorial.md) for more worked
+examples like this one.
 
 ## Documentation
 
-    docs/language_spec.md            the full language reference
-    docs/grammar.md                    the formal EBNF grammar
-    docs/classes.md                     object orientation in depth
-    docs/stdlib.md                       every builtin function
-    docs/tutorial.md                     a guided walkthrough
-    docs/differences_from_holyc.md   exactly what changed from stock HolyC
+  - [docs/language_spec.md](docs/language_spec.md) — the full language reference
+  - [docs/grammar.md](docs/grammar.md) — the formal EBNF grammar
+  - [docs/classes.md](docs/classes.md) — object orientation in depth
+  - [docs/stdlib.md](docs/stdlib.md) — every builtin function
+  - [docs/tutorial.md](docs/tutorial.md) — a guided walkthrough
+  - [docs/differences_from_holyc.md](docs/differences_from_holyc.md) — exactly what changed from stock HolyC
 
 ## License
 
-See LICENSE.
+See [LICENSE](LICENSE).
