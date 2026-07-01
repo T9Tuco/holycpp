@@ -1,0 +1,684 @@
+// parser.hc++
+//
+// The real HolyC++ parser, written in HolyC++ itself. A recursive
+// descent parser matching docs/grammar.md exactly, and mirroring
+// bootstrap/hcrun.c function for function, only in HolyC++ instead of
+// its host language C.
+
+import "common.hc++";
+import "lexer.hc++";
+
+Bool IsTypeStart(I64 k) {
+    if (k == TK_U0) return TRUE;
+    if (k == TK_U8) return TRUE;
+    if (k == TK_U16) return TRUE;
+    if (k == TK_U32) return TRUE;
+    if (k == TK_U64) return TRUE;
+    if (k == TK_I8) return TRUE;
+    if (k == TK_I16) return TRUE;
+    if (k == TK_I32) return TRUE;
+    if (k == TK_I64) return TRUE;
+    if (k == TK_F64) return TRUE;
+    if (k == TK_BOOL) return TRUE;
+    if (k == TK_STR) return TRUE;
+    if (k == TK_AUTO) return TRUE;
+    return FALSE;
+}
+
+Node MakeNode(I64 kind, I64 line) {
+    Node n = Node();
+    n.kind = kind;
+    n.line = line;
+    return n;
+}
+
+class Parser {
+    TokenList tokens;
+    I64 pos;
+
+    U0 Parser(TokenList tl) {
+        this.tokens = tl;
+        this.pos = 0;
+    }
+
+    Token Peek() {
+        return this.tokens.Get(this.pos);
+    }
+
+    Token PeekAt(I64 offset) {
+        I64 idx = this.pos + offset;
+        if (idx >= this.tokens.count) idx = this.tokens.count - 1;
+        return this.tokens.Get(idx);
+    }
+
+    Token Advance() {
+        Token t = this.Peek();
+        if (t.kind != TK_EOF) this.pos++;
+        return t;
+    }
+
+    Bool Check(I64 k) {
+        return this.Peek().kind == k;
+    }
+
+    Bool Match(I64 k) {
+        if (this.Check(k)) {
+            this.Advance();
+            return TRUE;
+        }
+        return FALSE;
+    }
+
+    Token Expect(I64 k, U8* what) {
+        if (!this.Check(k)) {
+            Print("HolyC++ parser error (line %d): expected %s but found %s\n", this.Peek().line, what, this.Peek().text);
+            Exit(1);
+        }
+        return this.Advance();
+    }
+
+    Bool LooksLikeType() {
+        if (IsTypeStart(this.Peek().kind)) return TRUE;
+        if (this.Peek().kind == TK_IDENT && this.PeekAt(1).kind == TK_IDENT) return TRUE;
+        return FALSE;
+    }
+
+    Node ParseType() {
+        Token t = this.Advance();
+        Node ty = Node();
+        if (t.kind == TK_U0) ty.type_kind = TY_U0;
+        else if (t.kind == TK_U8) ty.type_kind = TY_U8;
+        else if (t.kind == TK_U16) ty.type_kind = TY_U16;
+        else if (t.kind == TK_U32) ty.type_kind = TY_U32;
+        else if (t.kind == TK_U64) ty.type_kind = TY_U64;
+        else if (t.kind == TK_I8) ty.type_kind = TY_I8;
+        else if (t.kind == TK_I16) ty.type_kind = TY_I16;
+        else if (t.kind == TK_I32) ty.type_kind = TY_I32;
+        else if (t.kind == TK_I64) ty.type_kind = TY_I64;
+        else if (t.kind == TK_F64) ty.type_kind = TY_F64;
+        else if (t.kind == TK_BOOL) ty.type_kind = TY_BOOL;
+        else if (t.kind == TK_STR) ty.type_kind = TY_STR;
+        else if (t.kind == TK_AUTO) ty.type_kind = TY_AUTO;
+        else if (t.kind == TK_IDENT) { ty.type_kind = TY_CLASST; ty.type_class_name = t.text; }
+        else {
+            Print("HolyC++ parser error (line %d): expected a type but found %s\n", t.line, t.text);
+            Exit(1);
+        }
+        this.Match(TK_STAR);
+        return ty;
+    }
+
+    // ---- expressions, lowest to highest precedence --------------------
+
+    NodeList ParseArgList() {
+        NodeList args = NodeList();
+        if (!this.Check(TK_RPAREN)) {
+            args.Push(this.ParseExpr());
+            while (this.Match(TK_COMMA)) args.Push(this.ParseExpr());
+        }
+        this.Expect(TK_RPAREN, ")");
+        return args;
+    }
+
+    Node ParsePrimary() {
+        Token t = this.Peek();
+
+        if (this.Match(TK_INT)) { Node e = MakeNode(N_INT, t.line); e.ival = t.ival; return e; }
+        if (this.Match(TK_FLOAT)) { Node e = MakeNode(N_FLOAT, t.line); e.fval = t.fval; return e; }
+        if (this.Match(TK_STRING)) { Node e = MakeNode(N_STRING, t.line); e.sval = t.text; return e; }
+        if (this.Match(TK_CHAR)) { Node e = MakeNode(N_CHAR, t.line); e.ival = t.ival; return e; }
+        if (this.Match(TK_TRUE)) { Node e = MakeNode(N_BOOL, t.line); e.bval = TRUE; return e; }
+        if (this.Match(TK_FALSE)) { Node e = MakeNode(N_BOOL, t.line); e.bval = FALSE; return e; }
+        if (this.Match(TK_NULLK)) return MakeNode(N_NULLK, t.line);
+        if (this.Match(TK_THIS)) return MakeNode(N_THIS, t.line);
+
+        if (this.Match(TK_NEW)) {
+            Token name = this.Expect(TK_IDENT, "class name after new");
+            this.Expect(TK_LPAREN, "(");
+            Node e = MakeNode(N_NEWCALL, t.line);
+            e.sval = name.text;
+            e.list1 = this.ParseArgList();
+            return e;
+        }
+
+        if (this.Match(TK_LBRACE)) {
+            Node e = MakeNode(N_ARRAYLIT, t.line);
+            if (!this.Check(TK_RBRACE)) {
+                e.list1.Push(this.ParseExpr());
+                while (this.Match(TK_COMMA)) e.list1.Push(this.ParseExpr());
+            }
+            this.Expect(TK_RBRACE, "}");
+            return e;
+        }
+
+        if (this.Match(TK_LPAREN)) {
+            Node inner = this.ParseExpr();
+            this.Expect(TK_RPAREN, ")");
+            return inner;
+        }
+
+        if (this.Match(TK_IDENT)) {
+            Node e = MakeNode(N_IDENT, t.line);
+            e.sval = t.text;
+            return e;
+        }
+
+        Print("HolyC++ parser error (line %d): unexpected token %s\n", t.line, t.text);
+        Exit(1);
+    }
+
+    Node ParsePostfix() {
+        Node e = this.ParsePrimary();
+        Bool loop = TRUE;
+        while (loop) {
+            if (this.Match(TK_LPAREN)) {
+                Node call = MakeNode(N_CALL, e.line);
+                call.a = e;
+                call.list1 = this.ParseArgList();
+                e = call;
+            } else if (this.Match(TK_LBRACKET)) {
+                Node idx = MakeNode(N_INDEX, e.line);
+                idx.a = e;
+                idx.b = this.ParseExpr();
+                this.Expect(TK_RBRACKET, "]");
+                e = idx;
+            } else if (this.Match(TK_DOT)) {
+                Token name = this.Expect(TK_IDENT, "member name");
+                Node m = MakeNode(N_MEMBER, e.line);
+                m.a = e;
+                m.sval = name.text;
+                e = m;
+            } else if (this.Check(TK_INC)) {
+                this.Advance();
+                Node inc = MakeNode(N_POSTINC, e.line);
+                inc.a = e;
+                e = inc;
+            } else if (this.Check(TK_DEC)) {
+                this.Advance();
+                Node dec = MakeNode(N_POSTDEC, e.line);
+                dec.a = e;
+                e = dec;
+            } else {
+                loop = FALSE;
+            }
+        }
+        return e;
+    }
+
+    Node ParseUnary() {
+        Token t = this.Peek();
+        if (t.kind == TK_NOT || t.kind == TK_TILDE || t.kind == TK_MINUS || t.kind == TK_PLUS) {
+            this.Advance();
+            Node e = MakeNode(N_UNARY, t.line);
+            e.sval = t.text;
+            e.a = this.ParseUnary();
+            return e;
+        }
+        if (t.kind == TK_INC) {
+            this.Advance();
+            Node e = MakeNode(N_PREINC, t.line);
+            e.a = this.ParseUnary();
+            return e;
+        }
+        if (t.kind == TK_DEC) {
+            this.Advance();
+            Node e = MakeNode(N_PREDEC, t.line);
+            e.a = this.ParseUnary();
+            return e;
+        }
+        return this.ParsePostfix();
+    }
+
+    Node ParseMultiplicative() {
+        Node left = this.ParseUnary();
+        while (this.Check(TK_STAR) || this.Check(TK_SLASH) || this.Check(TK_PERCENT)) {
+            Token op = this.Advance();
+            Node e = MakeNode(N_BINARY, op.line);
+            e.sval = op.text;
+            e.a = left;
+            e.b = this.ParseUnary();
+            left = e;
+        }
+        return left;
+    }
+
+    Node ParseAdditive() {
+        Node left = this.ParseMultiplicative();
+        while (this.Check(TK_PLUS) || this.Check(TK_MINUS)) {
+            Token op = this.Advance();
+            Node e = MakeNode(N_BINARY, op.line);
+            e.sval = op.text;
+            e.a = left;
+            e.b = this.ParseMultiplicative();
+            left = e;
+        }
+        return left;
+    }
+
+    Node ParseShift() {
+        Node left = this.ParseAdditive();
+        while (this.Check(TK_SHL) || this.Check(TK_SHR)) {
+            Token op = this.Advance();
+            Node e = MakeNode(N_BINARY, op.line);
+            e.sval = op.text;
+            e.a = left;
+            e.b = this.ParseAdditive();
+            left = e;
+        }
+        return left;
+    }
+
+    Node ParseComparison() {
+        Node left = this.ParseShift();
+        while (this.Check(TK_LT) || this.Check(TK_LE) || this.Check(TK_GT) || this.Check(TK_GE)) {
+            Token op = this.Advance();
+            Node e = MakeNode(N_BINARY, op.line);
+            e.sval = op.text;
+            e.a = left;
+            e.b = this.ParseShift();
+            left = e;
+        }
+        return left;
+    }
+
+    Node ParseEquality() {
+        Node left = this.ParseComparison();
+        while (this.Check(TK_EQ) || this.Check(TK_NEQ)) {
+            Token op = this.Advance();
+            Node e = MakeNode(N_BINARY, op.line);
+            e.sval = op.text;
+            e.a = left;
+            e.b = this.ParseComparison();
+            left = e;
+        }
+        return left;
+    }
+
+    Node ParseBitAnd() {
+        Node left = this.ParseEquality();
+        while (this.Check(TK_AMP)) {
+            Token op = this.Advance();
+            Node e = MakeNode(N_BINARY, op.line);
+            e.sval = op.text;
+            e.a = left;
+            e.b = this.ParseEquality();
+            left = e;
+        }
+        return left;
+    }
+
+    Node ParseBitXor() {
+        Node left = this.ParseBitAnd();
+        while (this.Check(TK_CARET)) {
+            Token op = this.Advance();
+            Node e = MakeNode(N_BINARY, op.line);
+            e.sval = op.text;
+            e.a = left;
+            e.b = this.ParseBitAnd();
+            left = e;
+        }
+        return left;
+    }
+
+    Node ParseBitOr() {
+        Node left = this.ParseBitXor();
+        while (this.Check(TK_PIPE)) {
+            Token op = this.Advance();
+            Node e = MakeNode(N_BINARY, op.line);
+            e.sval = op.text;
+            e.a = left;
+            e.b = this.ParseBitXor();
+            left = e;
+        }
+        return left;
+    }
+
+    Node ParseLogicAnd() {
+        Node left = this.ParseBitOr();
+        while (this.Check(TK_ANDAND)) {
+            Token op = this.Advance();
+            Node e = MakeNode(N_LOGICAL, op.line);
+            e.sval = op.text;
+            e.a = left;
+            e.b = this.ParseBitOr();
+            left = e;
+        }
+        return left;
+    }
+
+    Node ParseLogicOr() {
+        Node left = this.ParseLogicAnd();
+        while (this.Check(TK_OROR)) {
+            Token op = this.Advance();
+            Node e = MakeNode(N_LOGICAL, op.line);
+            e.sval = op.text;
+            e.a = left;
+            e.b = this.ParseLogicAnd();
+            left = e;
+        }
+        return left;
+    }
+
+    Node ParseTernary() {
+        Node cond = this.ParseLogicOr();
+        if (this.Match(TK_QUESTION)) {
+            Node e = MakeNode(N_TERNARY, cond.line);
+            e.a = cond;
+            e.b = this.ParseExpr();
+            this.Expect(TK_COLON, ":");
+            e.c = this.ParseTernary();
+            return e;
+        }
+        return cond;
+    }
+
+    Node ParseAssignment() {
+        Node left = this.ParseTernary();
+        I64 k = this.Peek().kind;
+        if (k == TK_ASSIGN || k == TK_PLUSEQ || k == TK_MINUSEQ || k == TK_STAREQ || k == TK_SLASHEQ || k == TK_PERCENTEQ) {
+            Token op = this.Advance();
+            Node e;
+            if (k == TK_ASSIGN) e = MakeNode(N_ASSIGN, op.line);
+            else e = MakeNode(N_COMPOUND, op.line);
+            e.sval = op.text;
+            e.a = left;
+            e.b = this.ParseAssignment();
+            return e;
+        }
+        return left;
+    }
+
+    Node ParseExpr() {
+        return this.ParseAssignment();
+    }
+
+    // ---- statements ------------------------------------------------------
+
+    NodeList ParseDeclItems() {
+        NodeList items = NodeList();
+        Bool more = TRUE;
+        while (more) {
+            Token name = this.Expect(TK_IDENT, "variable name");
+            Node item = MakeNode(N_DECLITEM, name.line);
+            item.sval = name.text;
+            if (this.Match(TK_LBRACKET)) {
+                Token size = this.Expect(TK_INT, "array size");
+                item.array_size = size.ival;
+                this.Expect(TK_RBRACKET, "]");
+            }
+            if (this.Match(TK_ASSIGN)) {
+                if (this.Check(TK_LBRACE)) {
+                    this.Advance();
+                    item.bval = TRUE;
+                    if (!this.Check(TK_RBRACE)) {
+                        item.list1.Push(this.ParseExpr());
+                        while (this.Match(TK_COMMA)) item.list1.Push(this.ParseExpr());
+                    }
+                    this.Expect(TK_RBRACE, "}");
+                } else {
+                    item.a = this.ParseExpr();
+                }
+            }
+            items.Push(item);
+            more = this.Match(TK_COMMA);
+        }
+        this.Expect(TK_SEMI, ";");
+        return items;
+    }
+
+    Node ParseVarDecl() {
+        I64 line = this.Peek().line;
+        Node ty = this.ParseType();
+        Node decl = MakeNode(N_VARDECL, line);
+        decl.type_kind = ty.type_kind;
+        decl.type_class_name = ty.type_class_name;
+        decl.list1 = this.ParseDeclItems();
+        return decl;
+    }
+
+    Node ParseBlock() {
+        I64 line = this.Peek().line;
+        this.Expect(TK_LBRACE, "{");
+        Node b = MakeNode(N_BLOCK, line);
+        while (!this.Check(TK_RBRACE) && !this.Check(TK_EOF)) b.list1.Push(this.ParseStatement());
+        this.Expect(TK_RBRACE, "}");
+        return b;
+    }
+
+    Node ParseStatement() {
+        Token t = this.Peek();
+
+        if (t.kind == TK_LBRACE) return this.ParseBlock();
+
+        if (t.kind == TK_IF) {
+            this.Advance();
+            this.Expect(TK_LPAREN, "(");
+            Node s = MakeNode(N_IF, t.line);
+            s.a = this.ParseExpr();
+            this.Expect(TK_RPAREN, ")");
+            s.b = this.ParseStatement();
+            if (this.Match(TK_ELSE)) s.c = this.ParseStatement();
+            return s;
+        }
+
+        if (t.kind == TK_WHILE) {
+            this.Advance();
+            this.Expect(TK_LPAREN, "(");
+            Node s = MakeNode(N_WHILE, t.line);
+            s.a = this.ParseExpr();
+            this.Expect(TK_RPAREN, ")");
+            s.b = this.ParseStatement();
+            return s;
+        }
+
+        if (t.kind == TK_DO) {
+            this.Advance();
+            Node s = MakeNode(N_DOWHILE, t.line);
+            s.b = this.ParseStatement();
+            this.Expect(TK_WHILE, "while");
+            this.Expect(TK_LPAREN, "(");
+            s.a = this.ParseExpr();
+            this.Expect(TK_RPAREN, ")");
+            this.Expect(TK_SEMI, ";");
+            return s;
+        }
+
+        if (t.kind == TK_FOR) {
+            this.Advance();
+            this.Expect(TK_LPAREN, "(");
+            Node s = MakeNode(N_FOR, t.line);
+            if (this.Check(TK_SEMI)) {
+                this.Advance();
+            } else if (this.LooksLikeType()) {
+                s.a = this.ParseVarDecl();
+            } else {
+                Node es = MakeNode(N_EXPRSTMT, this.Peek().line);
+                es.a = this.ParseExpr();
+                this.Expect(TK_SEMI, ";");
+                s.a = es;
+            }
+            if (!this.Check(TK_SEMI)) s.b = this.ParseExpr();
+            this.Expect(TK_SEMI, ";");
+            if (!this.Check(TK_RPAREN)) s.c = this.ParseExpr();
+            this.Expect(TK_RPAREN, ")");
+            s.d = this.ParseStatement();
+            return s;
+        }
+
+        if (t.kind == TK_SWITCH) {
+            this.Advance();
+            this.Expect(TK_LPAREN, "(");
+            Node s = MakeNode(N_SWITCH, t.line);
+            s.a = this.ParseExpr();
+            this.Expect(TK_RPAREN, ")");
+            this.Expect(TK_LBRACE, "{");
+            while (!this.Check(TK_RBRACE) && !this.Check(TK_EOF)) {
+                Node c = MakeNode(N_CASE, this.Peek().line);
+                if (this.Match(TK_CASE)) {
+                    c.a = this.ParseExpr();
+                    this.Expect(TK_COLON, ":");
+                } else {
+                    this.Expect(TK_DEFAULT, "default");
+                    this.Expect(TK_COLON, ":");
+                    c.bval = TRUE;
+                }
+                while (!this.Check(TK_CASE) && !this.Check(TK_DEFAULT) && !this.Check(TK_RBRACE) && !this.Check(TK_EOF))
+                    c.list1.Push(this.ParseStatement());
+                s.list1.Push(c);
+            }
+            this.Expect(TK_RBRACE, "}");
+            return s;
+        }
+
+        if (t.kind == TK_BREAK) { this.Advance(); this.Expect(TK_SEMI, ";"); return MakeNode(N_BREAK, t.line); }
+        if (t.kind == TK_CONTINUE) { this.Advance(); this.Expect(TK_SEMI, ";"); return MakeNode(N_CONTINUE, t.line); }
+
+        if (t.kind == TK_RETURN) {
+            this.Advance();
+            Node s = MakeNode(N_RETURN, t.line);
+            if (!this.Check(TK_SEMI)) s.a = this.ParseExpr();
+            this.Expect(TK_SEMI, ";");
+            return s;
+        }
+
+        if (t.kind == TK_GOTO) {
+            this.Advance();
+            Token name = this.Expect(TK_IDENT, "label name");
+            this.Expect(TK_SEMI, ";");
+            Node s = MakeNode(N_GOTO, t.line);
+            s.sval = name.text;
+            return s;
+        }
+
+        if (t.kind == TK_IDENT && this.PeekAt(1).kind == TK_COLON) {
+            this.Advance();
+            this.Advance();
+            Node s = MakeNode(N_LABEL, t.line);
+            s.sval = t.text;
+            return s;
+        }
+
+        if (this.LooksLikeType()) return this.ParseVarDecl();
+
+        Node s = MakeNode(N_EXPRSTMT, t.line);
+        s.a = this.ParseExpr();
+        this.Expect(TK_SEMI, ";");
+        return s;
+    }
+
+    // ---- top level: classes, functions, globals ---------------------------
+
+    NodeList ParseParamList() {
+        NodeList params = NodeList();
+        if (!this.Check(TK_RPAREN)) {
+            Bool more = TRUE;
+            while (more) {
+                Node ty = this.ParseType();
+                Token name = this.Expect(TK_IDENT, "parameter name");
+                Node p = MakeNode(N_PARAM, name.line);
+                p.sval = name.text;
+                p.type_kind = ty.type_kind;
+                p.type_class_name = ty.type_class_name;
+                if (this.Match(TK_LBRACKET)) this.Expect(TK_RBRACKET, "]");
+                params.Push(p);
+                more = this.Match(TK_COMMA);
+            }
+        }
+        this.Expect(TK_RPAREN, ")");
+        return params;
+    }
+
+    Node ParseClassDecl() {
+        this.Expect(TK_CLASS, "class");
+        Token name = this.Expect(TK_IDENT, "class name");
+        Node cls = MakeNode(N_CLASSDECL, name.line);
+        cls.sval = name.text;
+        if (this.Match(TK_COLON)) cls.sval2 = this.Expect(TK_IDENT, "base class name").text;
+        this.Expect(TK_LBRACE, "{");
+        while (!this.Check(TK_RBRACE) && !this.Check(TK_EOF)) {
+            Node ty = this.ParseType();
+            Token memberName = this.Expect(TK_IDENT, "member name");
+            if (this.Check(TK_LPAREN)) {
+                this.Advance();
+                Node fn = MakeNode(N_FUNCDECL, memberName.line);
+                fn.sval = memberName.text;
+                fn.type_kind = ty.type_kind;
+                fn.type_class_name = ty.type_class_name;
+                fn.sval2 = cls.sval;
+                fn.list1 = this.ParseParamList();
+                fn.a = this.ParseBlock();
+                cls.list2.Push(fn);
+            } else {
+                Node field = MakeNode(N_FIELD, memberName.line);
+                field.sval = memberName.text;
+                field.type_kind = ty.type_kind;
+                field.type_class_name = ty.type_class_name;
+                if (this.Match(TK_LBRACKET)) {
+                    Token size = this.Expect(TK_INT, "array size");
+                    field.array_size = size.ival;
+                    this.Expect(TK_RBRACKET, "]");
+                }
+                cls.list1.Push(field);
+                while (this.Match(TK_COMMA)) {
+                    Token more = this.Expect(TK_IDENT, "field name");
+                    Node more_field = MakeNode(N_FIELD, more.line);
+                    more_field.sval = more.text;
+                    more_field.type_kind = ty.type_kind;
+                    more_field.type_class_name = ty.type_class_name;
+                    if (this.Match(TK_LBRACKET)) {
+                        Token size = this.Expect(TK_INT, "array size");
+                        more_field.array_size = size.ival;
+                        this.Expect(TK_RBRACKET, "]");
+                    }
+                    cls.list1.Push(more_field);
+                }
+                this.Expect(TK_SEMI, ";");
+            }
+        }
+        this.Expect(TK_RBRACE, "}");
+        this.Match(TK_SEMI);
+        return cls;
+    }
+
+    U0 ParseTopLevel(Program prog) {
+        while (!this.Check(TK_EOF)) {
+            if (this.Check(TK_CLASS)) {
+                prog.classes.Push(this.ParseClassDecl());
+                continue;
+            }
+
+            if (IsTypeStart(this.Peek().kind) || (this.Peek().kind == TK_IDENT && this.PeekAt(1).kind == TK_IDENT)) {
+                Node ty = this.ParseType();
+                Token name = this.Expect(TK_IDENT, "function or variable name");
+                if (this.Check(TK_LPAREN)) {
+                    this.Advance();
+                    Node fn = MakeNode(N_FUNCDECL, name.line);
+                    fn.sval = name.text;
+                    fn.type_kind = ty.type_kind;
+                    fn.type_class_name = ty.type_class_name;
+                    fn.list1 = this.ParseParamList();
+                    fn.a = this.ParseBlock();
+                    prog.funcs.Push(fn);
+                } else {
+                    this.pos = this.pos - 1;
+                    Node decl = MakeNode(N_VARDECL, name.line);
+                    decl.type_kind = ty.type_kind;
+                    decl.type_class_name = ty.type_class_name;
+                    decl.list1 = this.ParseDeclItems();
+                    prog.globals.Push(decl);
+                }
+                continue;
+            }
+
+            Print("HolyC++ parser error (line %d): expected a class, function or variable declaration, found %s\n", this.Peek().line, this.Peek().text);
+            Exit(1);
+        }
+    }
+};
+
+Program ParseProgram(TokenList tokens) {
+    Parser p = Parser(tokens);
+    Program prog = Program();
+    p.ParseTopLevel(prog);
+    return prog;
+}

@@ -1,0 +1,945 @@
+// interpreter.hc++
+//
+// The real HolyC++ tree walking evaluator, written in HolyC++ itself.
+// It mirrors bootstrap/hcrun.c function for function: same fixed width
+// integer wraparound rules, same single inheritance with virtual
+// method dispatch, same control flow signal propagation for break,
+// continue, return and goto. Every stdlib call a target program makes
+// (Print, StrLen, Sqrt, and so on) is forwarded here to the very same
+// native builtin hcrun itself exposes, there is no separate, second
+// standard library to keep in sync.
+
+import "common.hc++";
+import "lexer.hc++";
+import "parser.hc++";
+
+// ---- value kinds --------------------------------------------------
+
+I64 VK_I64 = 0;
+I64 VK_F64 = 1;
+I64 VK_BOOL = 2;
+I64 VK_STR = 3;
+I64 VK_ARRAY = 4;
+I64 VK_OBJ = 5;
+I64 VK_NULL = 6;
+I64 VK_VOID = 7;
+
+class Value {
+    I64 kind;
+    I64 ival;
+    F64 fval;
+    Bool bval;
+    U8* sval;
+    ArrayVal arr;
+    ObjVal obj;
+
+    U0 Value() {
+        this.kind = VK_VOID;
+        this.sval = "";
+    }
+};
+
+class ArrayVal {
+    I64 elem_type_kind;
+    U8* elem_class_name;
+    I64 length;
+    Value items[4096];
+
+    U0 ArrayVal() {
+        this.length = 0;
+        this.elem_class_name = "";
+    }
+};
+
+class ObjVal {
+    Node cls;
+    U8* field_names[128];
+    Value field_values[128];
+    I64 field_count;
+
+    U0 ObjVal() {
+        this.field_count = 0;
+    }
+};
+
+class ValueList {
+    Value items[64];
+    I64 count;
+
+    U0 ValueList() {
+        this.count = 0;
+    }
+
+    U0 Push(Value v) {
+        this.items[this.count] = v;
+        this.count++;
+    }
+
+    Value Get(I64 i) {
+        return this.items[i];
+    }
+};
+
+Value VI64(I64 x) { Value v = Value(); v.kind = VK_I64; v.ival = x; return v; }
+Value VF64(F64 x) { Value v = Value(); v.kind = VK_F64; v.fval = x; return v; }
+Value VBool(Bool x) { Value v = Value(); v.kind = VK_BOOL; v.bval = x; return v; }
+Value VStr(U8* x) { Value v = Value(); v.kind = VK_STR; v.sval = x; return v; }
+Value VNull() { Value v = Value(); v.kind = VK_NULL; return v; }
+Value VVoid() { Value v = Value(); v.kind = VK_VOID; return v; }
+
+// ---- environment: a chain of scopes, root is the global scope --------
+
+class Binding {
+    U8* name;
+    I64 type_kind;
+    U8* type_class_name;
+    Value value;
+};
+
+class BindingList {
+    Binding items[256];
+    I64 count;
+
+    U0 BindingList() {
+        this.count = 0;
+    }
+
+    U0 Push(Binding b) {
+        this.items[this.count] = b;
+        this.count++;
+    }
+
+    Binding Get(I64 i) {
+        return this.items[i];
+    }
+};
+
+class Env {
+    BindingList bindings;
+    Env parent;
+    Value this_val;
+    Bool has_this;
+
+    U0 Env(Env p) {
+        this.bindings = BindingList();
+        this.parent = p;
+        this.has_this = FALSE;
+        if (p != NULL && p.has_this) {
+            this.this_val = p.this_val;
+            this.has_this = TRUE;
+        }
+    }
+
+    Binding FindLocal(U8* name) {
+        I64 i;
+        for (i = 0; i < this.bindings.count; i++) {
+            Binding b = this.bindings.Get(i);
+            if (StrCmp(b.name, name) == 0) return b;
+        }
+        return NULL;
+    }
+
+    Binding Find(U8* name) {
+        Env cur = this;
+        while (cur != NULL) {
+            Binding b = cur.FindLocal(name);
+            if (b != NULL) return b;
+            cur = cur.parent;
+        }
+        return NULL;
+    }
+
+    Binding Define(U8* name, I64 tk, U8* tcn, Value value) {
+        Binding b = Binding();
+        b.name = name;
+        b.type_kind = tk;
+        b.type_class_name = tcn;
+        b.value = value;
+        this.bindings.Push(b);
+        return b;
+    }
+};
+
+// ---- program lookups: classes, methods and free functions ---------------
+
+Program G_PROG;
+Env G_GLOBALS;
+
+Node FindClass(U8* name) {
+    I64 i;
+    for (i = 0; i < G_PROG.classes.count; i++) {
+        Node c = G_PROG.classes.Get(i);
+        if (StrCmp(c.sval, name) == 0) return c;
+    }
+    return NULL;
+}
+
+Node FindFreeFunc(U8* name) {
+    I64 i;
+    for (i = 0; i < G_PROG.funcs.count; i++) {
+        Node f = G_PROG.funcs.Get(i);
+        if (StrCmp(f.sval, name) == 0) return f;
+    }
+    return NULL;
+}
+
+Node FindMethod(Node cls, U8* name) {
+    Node cur = cls;
+    while (cur != NULL) {
+        I64 i;
+        for (i = 0; i < cur.list2.count; i++) {
+            Node m = cur.list2.Get(i);
+            if (StrCmp(m.sval, name) == 0) return m;
+        }
+        if (StrLen(cur.sval2) > 0) cur = FindClass(cur.sval2);
+        else cur = NULL;
+    }
+    return NULL;
+}
+
+Node FindFieldNode(Node cls, U8* name) {
+    Node cur = cls;
+    while (cur != NULL) {
+        I64 i;
+        for (i = 0; i < cur.list1.count; i++) {
+            Node f = cur.list1.Get(i);
+            if (StrCmp(f.sval, name) == 0) return f;
+        }
+        if (StrLen(cur.sval2) > 0) cur = FindClass(cur.sval2);
+        else cur = NULL;
+    }
+    return NULL;
+}
+
+U0 CollectFields(Node cls, NodeList outFields) {
+    if (cls == NULL) return;
+    if (StrLen(cls.sval2) > 0) CollectFields(FindClass(cls.sval2), outFields);
+    I64 i;
+    for (i = 0; i < cls.list1.count; i++) outFields.Push(cls.list1.Get(i));
+}
+
+// ---- type coercion, mirrors mask_int and coerce_to_type in hcrun.c ------
+
+I64 TypeBits(I64 tk) {
+    if (tk == TY_U8 || tk == TY_I8) return 8;
+    if (tk == TY_U16 || tk == TY_I16) return 16;
+    if (tk == TY_U32 || tk == TY_I32) return 32;
+    return 64;
+}
+
+Bool TypeSigned(I64 tk) {
+    return tk == TY_I8 || tk == TY_I16 || tk == TY_I32 || tk == TY_I64;
+}
+
+I64 MaskInt(I64 value, I64 tk) {
+    I64 bits = TypeBits(tk);
+    if (bits >= 64) return value;
+    I64 mask = (1 << bits) - 1;
+    I64 masked = value & mask;
+    if (TypeSigned(tk) && (masked & (1 << (bits - 1))) != 0) masked = masked | (~mask);
+    return masked;
+}
+
+Value DefaultValueForType(I64 tk, U8* className) {
+    if (tk == TY_F64) return VF64(0.0);
+    if (tk == TY_BOOL) return VBool(FALSE);
+    if (tk == TY_STR) return VStr("");
+    if (tk == TY_CLASST) return VNull();
+    if (tk == TY_U0) return VVoid();
+    return VI64(0);
+}
+
+Value MakeArrayValue(I64 elemKind, U8* elemClassName, I64 length) {
+    ArrayVal arr = ArrayVal();
+    arr.elem_type_kind = elemKind;
+    arr.elem_class_name = elemClassName;
+    arr.length = length;
+    I64 i;
+    for (i = 0; i < length; i++) arr.items[i] = DefaultValueForType(elemKind, elemClassName);
+    Value v = Value();
+    v.kind = VK_ARRAY;
+    v.arr = arr;
+    return v;
+}
+
+I64 ValueAsInt(Value v) {
+    if (v.kind == VK_F64) { I64 r = v.fval; return r; }
+    if (v.kind == VK_BOOL) { if (v.bval) return 1; return 0; }
+    return v.ival;
+}
+
+F64 ValueAsDouble(Value v) {
+    if (v.kind == VK_I64) { F64 r = v.ival; return r; }
+    if (v.kind == VK_BOOL) { if (v.bval) return 1.0; return 0.0; }
+    return v.fval;
+}
+
+Bool ValueTruthy(Value v) {
+    if (v.kind == VK_I64) return v.ival != 0;
+    if (v.kind == VK_F64) return v.fval != 0.0;
+    if (v.kind == VK_BOOL) return v.bval;
+    if (v.kind == VK_STR) return StrLen(v.sval) > 0;
+    if (v.kind == VK_NULL) return FALSE;
+    if (v.kind == VK_VOID) return FALSE;
+    return TRUE;
+}
+
+U8* SelfValueToDisplay(Value v) {
+    if (v.kind == VK_STR) return v.sval;
+    if (v.kind == VK_I64) return ToStr(v.ival);
+    if (v.kind == VK_F64) return ToStr(v.fval);
+    if (v.kind == VK_BOOL) { if (v.bval) return "TRUE"; return "FALSE"; }
+    if (v.kind == VK_NULL) return "NULL";
+    if (v.kind == VK_VOID) return "";
+    if (v.kind == VK_OBJ) return v.obj.cls.sval + "@object";
+    return "array";
+}
+
+Value CoerceToType(Value v, I64 tk, U8* className) {
+    if (tk == TY_U0) return v;
+    if (tk == TY_AUTO) return v;
+    if (tk == TY_STR) return v;
+    if (tk == TY_CLASST) return v;
+    if (tk == TY_F64) {
+        if (v.kind == VK_I64) { F64 r = v.ival; return VF64(r); }
+        if (v.kind == VK_BOOL) { if (v.bval) return VF64(1.0); return VF64(0.0); }
+        return v;
+    }
+    if (tk == TY_BOOL) {
+        if (v.kind == VK_I64) return VBool(v.ival != 0);
+        if (v.kind == VK_F64) return VBool(v.fval != 0.0);
+        return v;
+    }
+    if (v.kind == VK_F64) { I64 r = v.fval; return VI64(MaskInt(r, tk)); }
+    if (v.kind == VK_BOOL) { if (v.bval) return VI64(MaskInt(1, tk)); return VI64(MaskInt(0, tk)); }
+    if (v.kind == VK_I64) return VI64(MaskInt(v.ival, tk));
+    return v;
+}
+
+ObjVal MakeInstance(Node cls) {
+    NodeList fields = NodeList();
+    CollectFields(cls, fields);
+    ObjVal obj = ObjVal();
+    obj.cls = cls;
+    obj.field_count = fields.count;
+    I64 i;
+    for (i = 0; i < fields.count; i++) {
+        Node f = fields.Get(i);
+        obj.field_names[i] = f.sval;
+        if (f.array_size > 0) obj.field_values[i] = MakeArrayValue(f.type_kind, f.type_class_name, f.array_size);
+        else obj.field_values[i] = DefaultValueForType(f.type_kind, f.type_class_name);
+    }
+    return obj;
+}
+
+I64 ObjFieldIndex(ObjVal obj, U8* name) {
+    I64 i;
+    for (i = 0; i < obj.field_count; i++) if (StrCmp(obj.field_names[i], name) == 0) return i;
+    return -1;
+}
+
+// ---- binary operators, mirrors binary_numeric and binary_compare -------
+
+Value BinaryNumeric(U8* op, Value a, Value b, I64 line) {
+    Bool useFloat = a.kind == VK_F64 || b.kind == VK_F64;
+    if (StrCmp(op, "+") == 0) {
+        if (a.kind == VK_STR || b.kind == VK_STR) return VStr(SelfValueToDisplay(a) + SelfValueToDisplay(b));
+        if (useFloat) return VF64(ValueAsDouble(a) + ValueAsDouble(b));
+        return VI64(ValueAsInt(a) + ValueAsInt(b));
+    }
+    if (StrCmp(op, "-") == 0) { if (useFloat) return VF64(ValueAsDouble(a) - ValueAsDouble(b)); return VI64(ValueAsInt(a) - ValueAsInt(b)); }
+    if (StrCmp(op, "*") == 0) { if (useFloat) return VF64(ValueAsDouble(a) * ValueAsDouble(b)); return VI64(ValueAsInt(a) * ValueAsInt(b)); }
+    if (StrCmp(op, "/") == 0) {
+        if (useFloat) return VF64(ValueAsDouble(a) / ValueAsDouble(b));
+        I64 divisor = ValueAsInt(b);
+        if (divisor == 0) { Print("HolyC++ runtime error (line %d): division by zero\n", line); Exit(1); }
+        return VI64(ValueAsInt(a) / divisor);
+    }
+    if (StrCmp(op, "%") == 0) {
+        I64 divisor = ValueAsInt(b);
+        if (divisor == 0) { Print("HolyC++ runtime error (line %d): division by zero\n", line); Exit(1); }
+        return VI64(ValueAsInt(a) % divisor);
+    }
+    if (StrCmp(op, "&") == 0) return VI64(ValueAsInt(a) & ValueAsInt(b));
+    if (StrCmp(op, "|") == 0) return VI64(ValueAsInt(a) | ValueAsInt(b));
+    if (StrCmp(op, "^") == 0) return VI64(ValueAsInt(a) ^ ValueAsInt(b));
+    if (StrCmp(op, "<<") == 0) return VI64(ValueAsInt(a) << ValueAsInt(b));
+    if (StrCmp(op, ">>") == 0) return VI64(ValueAsInt(a) >> ValueAsInt(b));
+    Print("HolyC++ runtime error (line %d): unknown binary operator %s\n", line, op);
+    Exit(1);
+}
+
+Bool ValuesEqual(Value a, Value b) {
+    if (a.kind == VK_STR && b.kind == VK_STR) return StrCmp(a.sval, b.sval) == 0;
+    if (a.kind == VK_NULL || b.kind == VK_NULL) return a.kind == VK_NULL && b.kind == VK_NULL;
+    if (a.kind == VK_OBJ && b.kind == VK_OBJ) return a.obj == b.obj;
+    return ValueAsDouble(a) == ValueAsDouble(b);
+}
+
+Value BinaryCompare(U8* op, Value a, Value b, I64 line) {
+    if (StrCmp(op, "==") == 0) return VBool(ValuesEqual(a, b));
+    if (StrCmp(op, "!=") == 0) return VBool(!ValuesEqual(a, b));
+    if (a.kind == VK_STR && b.kind == VK_STR) {
+        I64 c = StrCmp(a.sval, b.sval);
+        if (StrCmp(op, "<") == 0) return VBool(c < 0);
+        if (StrCmp(op, "<=") == 0) return VBool(c <= 0);
+        if (StrCmp(op, ">") == 0) return VBool(c > 0);
+        return VBool(c >= 0);
+    }
+    F64 x = ValueAsDouble(a);
+    F64 y = ValueAsDouble(b);
+    if (StrCmp(op, "<") == 0) return VBool(x < y);
+    if (StrCmp(op, "<=") == 0) return VBool(x <= y);
+    if (StrCmp(op, ">") == 0) return VBool(x > y);
+    if (StrCmp(op, ">=") == 0) return VBool(x >= y);
+    Print("HolyC++ runtime error (line %d): unknown comparison operator %s\n", line, op);
+    Exit(1);
+}
+
+// ---- control flow signals, mirrors CF in hcrun.c -----------------------
+
+I64 CF_NONE = 0;
+I64 CF_BREAK = 1;
+I64 CF_CONTINUE = 2;
+I64 CF_RETURN = 3;
+I64 CF_GOTO = 4;
+
+class CF {
+    I64 kind;
+    Value ret_value;
+    U8* goto_label;
+
+    U0 CF() {
+        this.kind = CF_NONE;
+        this.goto_label = "";
+    }
+};
+
+CF CFNone() { return CF(); }
+CF CFBreak() { CF c = CF(); c.kind = CF_BREAK; return c; }
+CF CFContinue() { CF c = CF(); c.kind = CF_CONTINUE; return c; }
+CF CFReturn(Value v) { CF c = CF(); c.kind = CF_RETURN; c.ret_value = v; return c; }
+CF CFGoto(U8* label) { CF c = CF(); c.kind = CF_GOTO; c.goto_label = label; return c; }
+
+// ---- assignment targets, mirrors assign_to_expr -------------------------
+
+U0 AssignToExpr(Env env, Node target, Value value) {
+    if (target.kind == N_IDENT) {
+        Binding b = env.Find(target.sval);
+        if (b == NULL) { Print("HolyC++ runtime error (line %d): assignment to undeclared variable %s\n", target.line, target.sval); Exit(1); }
+        b.value = CoerceToType(value, b.type_kind, b.type_class_name);
+        return;
+    }
+    if (target.kind == N_MEMBER) {
+        Value base = EvalExpr(env, target.a);
+        if (base.kind != VK_OBJ) { Print("HolyC++ runtime error (line %d): member assignment on a non object value\n", target.line); Exit(1); }
+        I64 idx = ObjFieldIndex(base.obj, target.sval);
+        if (idx < 0) { Print("HolyC++ runtime error (line %d): unknown field %s\n", target.line, target.sval); Exit(1); }
+        Node fieldNode = FindFieldNode(base.obj.cls, target.sval);
+        I64 tk = TY_I64;
+        U8* tcn = "";
+        if (fieldNode != NULL) { tk = fieldNode.type_kind; tcn = fieldNode.type_class_name; }
+        base.obj.field_values[idx] = CoerceToType(value, tk, tcn);
+        return;
+    }
+    if (target.kind == N_INDEX) {
+        Value base = EvalExpr(env, target.a);
+        if (base.kind != VK_ARRAY) { Print("HolyC++ runtime error (line %d): indexing a non array value\n", target.line); Exit(1); }
+        I64 idx = ValueAsInt(EvalExpr(env, target.b));
+        if (idx < 0 || idx >= base.arr.length) { Print("HolyC++ runtime error (line %d): array index out of bounds\n", target.line); Exit(1); }
+        base.arr.items[idx] = CoerceToType(value, base.arr.elem_type_kind, base.arr.elem_class_name);
+        return;
+    }
+    Print("HolyC++ runtime error (line %d): invalid assignment target\n", target.line);
+    Exit(1);
+}
+
+// ---- standard library forwarding ------------------------------------
+
+I64 HexDigit(I64 c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return c - 'A' + 10;
+}
+
+U8* HEX_DIGITS = "0123456789abcdef";
+
+U8* I64ToHex(I64 value) {
+    if (value == 0) return "0";
+    Bool neg = FALSE;
+    I64 v = value;
+    if (v < 0) { neg = TRUE; v = -v; }
+    U8* result = "";
+    while (v > 0) {
+        I64 digit = v % 16;
+        result = SubStr(HEX_DIGITS, digit, 1) + result;
+        v = v / 16;
+    }
+    if (neg) result = "-" + result;
+    return result;
+}
+
+U8* FormatValues(U8* fmt, ValueList args, I64 startIndex) {
+    U8* result = "";
+    I64 n = StrLen(fmt);
+    I64 argi = startIndex;
+    I64 i = 0;
+    while (i < n) {
+        I64 c = fmt[i];
+        if (c != '%') { result = result + SubStr(fmt, i, 1); i++; continue; }
+        i++;
+        if (i >= n) { result = result + "%"; continue; }
+        I64 spec = fmt[i];
+        i++;
+        if (spec == 'd') { result = result + ToStr(ValueAsInt(args.Get(argi))); argi++; }
+        else if (spec == 'f') { result = result + ToStr(ValueAsDouble(args.Get(argi))); argi++; }
+        else if (spec == 's') { result = result + SelfValueToDisplay(args.Get(argi)); argi++; }
+        else if (spec == 'c') { result = result + Chr(ValueAsInt(args.Get(argi))); argi++; }
+        else if (spec == 'x') { result = result + I64ToHex(ValueAsInt(args.Get(argi))); argi++; }
+        else if (spec == 'b') { if (ValueTruthy(args.Get(argi))) result = result + "TRUE"; else result = result + "FALSE"; argi++; }
+        else if (spec == '%') result = result + "%";
+        else { result = result + "%" + Chr(spec); }
+    }
+    return result;
+}
+
+Bool IsBuiltinName(U8* name) {
+    if (StrCmp(name, "Print") == 0) return TRUE;
+    if (StrCmp(name, "StrPrint") == 0) return TRUE;
+    if (StrCmp(name, "StrLen") == 0) return TRUE;
+    if (StrCmp(name, "StrCat") == 0) return TRUE;
+    if (StrCmp(name, "StrCmp") == 0) return TRUE;
+    if (StrCmp(name, "StrCopy") == 0) return TRUE;
+    if (StrCmp(name, "SubStr") == 0) return TRUE;
+    if (StrCmp(name, "ToUpper") == 0) return TRUE;
+    if (StrCmp(name, "ToLower") == 0) return TRUE;
+    if (StrCmp(name, "StrFind") == 0) return TRUE;
+    if (StrCmp(name, "Abs") == 0) return TRUE;
+    if (StrCmp(name, "Min") == 0) return TRUE;
+    if (StrCmp(name, "Max") == 0) return TRUE;
+    if (StrCmp(name, "Sqrt") == 0) return TRUE;
+    if (StrCmp(name, "Pow") == 0) return TRUE;
+    if (StrCmp(name, "Floor") == 0) return TRUE;
+    if (StrCmp(name, "Ceil") == 0) return TRUE;
+    if (StrCmp(name, "Round") == 0) return TRUE;
+    if (StrCmp(name, "ToI64") == 0) return TRUE;
+    if (StrCmp(name, "ToF64") == 0) return TRUE;
+    if (StrCmp(name, "ToStr") == 0) return TRUE;
+    if (StrCmp(name, "Chr") == 0) return TRUE;
+    if (StrCmp(name, "Len") == 0) return TRUE;
+    if (StrCmp(name, "ReadLn") == 0) return TRUE;
+    if (StrCmp(name, "RandI64") == 0) return TRUE;
+    if (StrCmp(name, "RandF64") == 0) return TRUE;
+    if (StrCmp(name, "Now") == 0) return TRUE;
+    if (StrCmp(name, "Exit") == 0) return TRUE;
+    if (StrCmp(name, "ReadFile") == 0) return TRUE;
+    if (StrCmp(name, "WriteFile") == 0) return TRUE;
+    if (StrCmp(name, "ArgCount") == 0) return TRUE;
+    if (StrCmp(name, "Arg") == 0) return TRUE;
+    return FALSE;
+}
+
+Value CallBuiltin(U8* name, ValueList args, I64 line) {
+    if (StrCmp(name, "Print") == 0) { Print("%s", FormatValues(args.Get(0).sval, args, 1)); return VVoid(); }
+    if (StrCmp(name, "StrPrint") == 0) return VStr(FormatValues(args.Get(0).sval, args, 1));
+    if (StrCmp(name, "StrLen") == 0) return VI64(StrLen(args.Get(0).sval));
+    if (StrCmp(name, "StrCat") == 0) return VStr(StrCat(args.Get(0).sval, args.Get(1).sval));
+    if (StrCmp(name, "StrCmp") == 0) return VI64(StrCmp(args.Get(0).sval, args.Get(1).sval));
+    if (StrCmp(name, "StrCopy") == 0) return VStr(StrCopy(args.Get(0).sval));
+    if (StrCmp(name, "SubStr") == 0) return VStr(SubStr(args.Get(0).sval, ValueAsInt(args.Get(1)), ValueAsInt(args.Get(2))));
+    if (StrCmp(name, "ToUpper") == 0) return VStr(ToUpper(args.Get(0).sval));
+    if (StrCmp(name, "ToLower") == 0) return VStr(ToLower(args.Get(0).sval));
+    if (StrCmp(name, "StrFind") == 0) return VI64(StrFind(args.Get(0).sval, args.Get(1).sval));
+    if (StrCmp(name, "Abs") == 0) {
+        Value v = args.Get(0);
+        if (v.kind == VK_F64) return VF64(Abs(v.fval));
+        return VI64(Abs(ValueAsInt(v)));
+    }
+    if (StrCmp(name, "Min") == 0) { Value a = args.Get(0); Value b = args.Get(1); if (ValueAsDouble(a) <= ValueAsDouble(b)) return a; return b; }
+    if (StrCmp(name, "Max") == 0) { Value a = args.Get(0); Value b = args.Get(1); if (ValueAsDouble(a) >= ValueAsDouble(b)) return a; return b; }
+    if (StrCmp(name, "Sqrt") == 0) return VF64(Sqrt(ValueAsDouble(args.Get(0))));
+    if (StrCmp(name, "Pow") == 0) return VF64(Pow(ValueAsDouble(args.Get(0)), ValueAsDouble(args.Get(1))));
+    if (StrCmp(name, "Floor") == 0) return VF64(Floor(ValueAsDouble(args.Get(0))));
+    if (StrCmp(name, "Ceil") == 0) return VF64(Ceil(ValueAsDouble(args.Get(0))));
+    if (StrCmp(name, "Round") == 0) return VI64(Round(ValueAsDouble(args.Get(0))));
+    if (StrCmp(name, "ToI64") == 0) {
+        Value v = args.Get(0);
+        if (v.kind == VK_STR) return VI64(ToI64(v.sval));
+        return VI64(ValueAsInt(v));
+    }
+    if (StrCmp(name, "ToF64") == 0) {
+        Value v = args.Get(0);
+        if (v.kind == VK_STR) return VF64(ToF64(v.sval));
+        return VF64(ValueAsDouble(v));
+    }
+    if (StrCmp(name, "ToStr") == 0) return VStr(SelfValueToDisplay(args.Get(0)));
+    if (StrCmp(name, "Chr") == 0) return VStr(Chr(ValueAsInt(args.Get(0))));
+    if (StrCmp(name, "Len") == 0) {
+        Value v = args.Get(0);
+        if (v.kind == VK_ARRAY) return VI64(v.arr.length);
+        if (v.kind == VK_STR) return VI64(StrLen(v.sval));
+        Print("HolyC++ runtime error (line %d): Len expects an array or a string\n", line);
+        Exit(1);
+    }
+    if (StrCmp(name, "ReadLn") == 0) return VStr(ReadLn());
+    if (StrCmp(name, "RandI64") == 0) return VI64(RandI64(ValueAsInt(args.Get(0)), ValueAsInt(args.Get(1))));
+    if (StrCmp(name, "RandF64") == 0) return VF64(RandF64());
+    if (StrCmp(name, "Now") == 0) return VI64(Now());
+    if (StrCmp(name, "Exit") == 0) Exit(ValueAsInt(args.Get(0)));
+    if (StrCmp(name, "ReadFile") == 0) return VStr(ReadFile(args.Get(0).sval));
+    if (StrCmp(name, "WriteFile") == 0) { WriteFile(args.Get(0).sval, args.Get(1).sval); return VVoid(); }
+    if (StrCmp(name, "ArgCount") == 0) return VI64(ArgCount());
+    if (StrCmp(name, "Arg") == 0) return VStr(Arg(ValueAsInt(args.Get(0))));
+
+    Print("HolyC++ runtime error (line %d): unknown builtin %s\n", line, name);
+    Exit(1);
+}
+
+// ---- expression evaluation --------------------------------------------
+
+ValueList EvalArgs(Env env, NodeList argExprs) {
+    ValueList out = ValueList();
+    I64 i;
+    for (i = 0; i < argExprs.count; i++) out.Push(EvalExpr(env, argExprs.Get(i)));
+    return out;
+}
+
+Value EvalExpr(Env env, Node e) {
+    if (e.kind == N_INT) return VI64(e.ival);
+    if (e.kind == N_FLOAT) return VF64(e.fval);
+    if (e.kind == N_STRING) return VStr(e.sval);
+    if (e.kind == N_CHAR) return VI64(e.ival);
+    if (e.kind == N_BOOL) return VBool(e.bval);
+    if (e.kind == N_NULLK) return VNull();
+
+    if (e.kind == N_THIS) {
+        if (!env.has_this) { Print("HolyC++ runtime error (line %d): this used outside of a method\n", e.line); Exit(1); }
+        return env.this_val;
+    }
+
+    if (e.kind == N_IDENT) {
+        Binding b = env.Find(e.sval);
+        if (b == NULL) { Print("HolyC++ runtime error (line %d): undefined variable %s\n", e.line, e.sval); Exit(1); }
+        return b.value;
+    }
+
+    if (e.kind == N_ASSIGN) {
+        Value v = EvalExpr(env, e.b);
+        AssignToExpr(env, e.a, v);
+        return v;
+    }
+
+    if (e.kind == N_COMPOUND) {
+        Value cur = EvalExpr(env, e.a);
+        Value rhs = EvalExpr(env, e.b);
+        U8* baseOp = "%";
+        if (StrCmp(e.sval, "+=") == 0) baseOp = "+";
+        else if (StrCmp(e.sval, "-=") == 0) baseOp = "-";
+        else if (StrCmp(e.sval, "*=") == 0) baseOp = "*";
+        else if (StrCmp(e.sval, "/=") == 0) baseOp = "/";
+        Value result = BinaryNumeric(baseOp, cur, rhs, e.line);
+        AssignToExpr(env, e.a, result);
+        return result;
+    }
+
+    if (e.kind == N_BINARY) {
+        Value a = EvalExpr(env, e.a);
+        Value b = EvalExpr(env, e.b);
+        if (StrCmp(e.sval, "==") == 0 || StrCmp(e.sval, "!=") == 0 || StrCmp(e.sval, "<") == 0 ||
+            StrCmp(e.sval, "<=") == 0 || StrCmp(e.sval, ">") == 0 || StrCmp(e.sval, ">=") == 0)
+            return BinaryCompare(e.sval, a, b, e.line);
+        return BinaryNumeric(e.sval, a, b, e.line);
+    }
+
+    if (e.kind == N_LOGICAL) {
+        Value a = EvalExpr(env, e.a);
+        if (StrCmp(e.sval, "&&") == 0) {
+            if (!ValueTruthy(a)) return VBool(FALSE);
+            return VBool(ValueTruthy(EvalExpr(env, e.b)));
+        }
+        if (ValueTruthy(a)) return VBool(TRUE);
+        return VBool(ValueTruthy(EvalExpr(env, e.b)));
+    }
+
+    if (e.kind == N_UNARY) {
+        Value a = EvalExpr(env, e.a);
+        if (StrCmp(e.sval, "-") == 0) { if (a.kind == VK_F64) return VF64(-a.fval); return VI64(-ValueAsInt(a)); }
+        if (StrCmp(e.sval, "+") == 0) return a;
+        if (StrCmp(e.sval, "!") == 0) return VBool(!ValueTruthy(a));
+        return VI64(~ValueAsInt(a));
+    }
+
+    if (e.kind == N_PREINC || e.kind == N_PREDEC || e.kind == N_POSTINC || e.kind == N_POSTDEC) {
+        Value old = EvalExpr(env, e.a);
+        I64 delta = 1;
+        if (e.kind == N_PREDEC || e.kind == N_POSTDEC) delta = -1;
+        Value updated;
+        if (old.kind == VK_F64) { F64 d = delta; updated = VF64(old.fval + d); }
+        else updated = VI64(ValueAsInt(old) + delta);
+        AssignToExpr(env, e.a, updated);
+        if (e.kind == N_PREINC || e.kind == N_PREDEC) return updated;
+        return old;
+    }
+
+    if (e.kind == N_TERNARY) {
+        if (ValueTruthy(EvalExpr(env, e.a))) return EvalExpr(env, e.b);
+        return EvalExpr(env, e.c);
+    }
+
+    if (e.kind == N_ARRAYLIT) {
+        I64 n = e.list1.count;
+        Value v = MakeArrayValue(TY_I64, "", n);
+        I64 i;
+        for (i = 0; i < n; i++) v.arr.items[i] = EvalExpr(env, e.list1.Get(i));
+        return v;
+    }
+
+    if (e.kind == N_INDEX) {
+        Value base = EvalExpr(env, e.a);
+        if (base.kind == VK_STR) {
+            I64 idx = ValueAsInt(EvalExpr(env, e.b));
+            if (idx < 0 || idx >= StrLen(base.sval)) { Print("HolyC++ runtime error (line %d): string index out of bounds\n", e.line); Exit(1); }
+            return VI64(base.sval[idx]);
+        }
+        if (base.kind != VK_ARRAY) { Print("HolyC++ runtime error (line %d): indexing a non array value\n", e.line); Exit(1); }
+        I64 idx = ValueAsInt(EvalExpr(env, e.b));
+        if (idx < 0 || idx >= base.arr.length) { Print("HolyC++ runtime error (line %d): array index out of bounds\n", e.line); Exit(1); }
+        return base.arr.items[idx];
+    }
+
+    if (e.kind == N_MEMBER) {
+        Value base = EvalExpr(env, e.a);
+        if (base.kind != VK_OBJ) { Print("HolyC++ runtime error (line %d): member access on a non object value\n", e.line); Exit(1); }
+        I64 idx = ObjFieldIndex(base.obj, e.sval);
+        if (idx < 0) { Print("HolyC++ runtime error (line %d): unknown field %s\n", e.line, e.sval); Exit(1); }
+        return base.obj.field_values[idx];
+    }
+
+    if (e.kind == N_NEWCALL) {
+        Node cls = FindClass(e.sval);
+        if (cls == NULL) { Print("HolyC++ runtime error (line %d): unknown class %s\n", e.line, e.sval); Exit(1); }
+        ValueList args = EvalArgs(env, e.list1);
+        return ConstructObject(cls, args);
+    }
+
+    if (e.kind == N_CALL) {
+        if (e.a.kind == N_MEMBER) {
+            Value base = EvalExpr(env, e.a.a);
+            if (base.kind != VK_OBJ) { Print("HolyC++ runtime error (line %d): method call on a non object value\n", e.line); Exit(1); }
+            Node fn = FindMethod(base.obj.cls, e.a.sval);
+            if (fn == NULL) { Print("HolyC++ runtime error (line %d): unknown method %s\n", e.line, e.a.sval); Exit(1); }
+            ValueList args = EvalArgs(env, e.list1);
+            return CallFunction(fn, args, base);
+        }
+        if (e.a.kind == N_IDENT) {
+            Node cls = FindClass(e.a.sval);
+            if (cls != NULL) {
+                ValueList args = EvalArgs(env, e.list1);
+                return ConstructObject(cls, args);
+            }
+            if (IsBuiltinName(e.a.sval)) {
+                ValueList args = EvalArgs(env, e.list1);
+                return CallBuiltin(e.a.sval, args, e.line);
+            }
+            Node fn = FindFreeFunc(e.a.sval);
+            if (fn == NULL) { Print("HolyC++ runtime error (line %d): unknown function %s\n", e.line, e.a.sval); Exit(1); }
+            ValueList args = EvalArgs(env, e.list1);
+            return CallFunction(fn, args, VNull());
+        }
+        Print("HolyC++ runtime error (line %d): expression is not callable\n", e.line);
+        Exit(1);
+    }
+
+    Print("HolyC++ runtime error (line %d): unhandled expression kind %d\n", e.line, e.kind);
+    Exit(1);
+}
+
+// ---- statement execution ------------------------------------------------
+
+U0 ExecVarDecl(Env env, Node s) {
+    I64 i;
+    for (i = 0; i < s.list1.count; i++) {
+        Node item = s.list1.Get(i);
+        Value value;
+        if (item.bval) {
+            I64 n = item.array_size;
+            if (n == 0) n = item.list1.count;
+            value = MakeArrayValue(s.type_kind, s.type_class_name, n);
+            I64 k;
+            for (k = 0; k < item.list1.count && k < n; k++)
+                value.arr.items[k] = CoerceToType(EvalExpr(env, item.list1.Get(k)), s.type_kind, s.type_class_name);
+        } else if (item.array_size > 0) {
+            value = MakeArrayValue(s.type_kind, s.type_class_name, item.array_size);
+        } else if (item.a != NULL) {
+            value = CoerceToType(EvalExpr(env, item.a), s.type_kind, s.type_class_name);
+        } else {
+            value = DefaultValueForType(s.type_kind, s.type_class_name);
+        }
+        env.Define(item.sval, s.type_kind, s.type_class_name, value);
+    }
+}
+
+I64 FindLabelIndex(NodeList stmts, U8* label) {
+    I64 i;
+    for (i = 0; i < stmts.count; i++) {
+        Node s = stmts.Get(i);
+        if (s.kind == N_LABEL && StrCmp(s.sval, label) == 0) return i;
+    }
+    return -1;
+}
+
+CF ExecBlockStmts(Env env, NodeList stmts) {
+    I64 i = 0;
+    while (i < stmts.count) {
+        Node s = stmts.Get(i);
+        CF cf = ExecStmt(env, s);
+        if (cf.kind == CF_GOTO) {
+            I64 target = FindLabelIndex(stmts, cf.goto_label);
+            if (target >= 0) { i = target + 1; continue; }
+            return cf;
+        }
+        if (cf.kind != CF_NONE) return cf;
+        i++;
+    }
+    return CFNone();
+}
+
+CF ExecStmt(Env env, Node s) {
+    if (s.kind == N_EXPRSTMT) { EvalExpr(env, s.a); return CFNone(); }
+    if (s.kind == N_VARDECL) { ExecVarDecl(env, s); return CFNone(); }
+
+    if (s.kind == N_BLOCK) {
+        Env inner = Env(env);
+        return ExecBlockStmts(inner, s.list1);
+    }
+
+    if (s.kind == N_IF) {
+        if (ValueTruthy(EvalExpr(env, s.a))) return ExecStmt(env, s.b);
+        if (s.c != NULL) return ExecStmt(env, s.c);
+        return CFNone();
+    }
+
+    if (s.kind == N_WHILE) {
+        while (ValueTruthy(EvalExpr(env, s.a))) {
+            CF cf = ExecStmt(env, s.b);
+            if (cf.kind == CF_BREAK) break;
+            if (cf.kind == CF_CONTINUE) continue;
+            if (cf.kind != CF_NONE) return cf;
+        }
+        return CFNone();
+    }
+
+    if (s.kind == N_DOWHILE) {
+        do {
+            CF cf = ExecStmt(env, s.b);
+            if (cf.kind == CF_BREAK) break;
+            if (cf.kind == CF_CONTINUE) continue;
+            if (cf.kind != CF_NONE) return cf;
+        } while (ValueTruthy(EvalExpr(env, s.a)));
+        return CFNone();
+    }
+
+    if (s.kind == N_FOR) {
+        Env loopEnv = Env(env);
+        if (s.a != NULL) ExecStmt(loopEnv, s.a);
+        while (s.b == NULL || ValueTruthy(EvalExpr(loopEnv, s.b))) {
+            CF cf = ExecStmt(loopEnv, s.d);
+            if (cf.kind == CF_BREAK) break;
+            if (cf.kind != CF_NONE && cf.kind != CF_CONTINUE) return cf;
+            if (s.c != NULL) EvalExpr(loopEnv, s.c);
+        }
+        return CFNone();
+    }
+
+    if (s.kind == N_SWITCH) {
+        Value subject = EvalExpr(env, s.a);
+        I64 start = -1;
+        I64 i;
+        for (i = 0; i < s.list1.count && start < 0; i++) {
+            Node c = s.list1.Get(i);
+            if (!c.bval && ValuesEqual(subject, EvalExpr(env, c.a))) start = i;
+        }
+        if (start < 0) {
+            for (i = 0; i < s.list1.count && start < 0; i++) {
+                Node c = s.list1.Get(i);
+                if (c.bval) start = i;
+            }
+        }
+        if (start < 0) return CFNone();
+        Env inner = Env(env);
+        for (i = start; i < s.list1.count; i++) {
+            Node c = s.list1.Get(i);
+            CF cf = ExecBlockStmts(inner, c.list1);
+            if (cf.kind == CF_BREAK) return CFNone();
+            if (cf.kind != CF_NONE) return cf;
+        }
+        return CFNone();
+    }
+
+    if (s.kind == N_BREAK) return CFBreak();
+    if (s.kind == N_CONTINUE) return CFContinue();
+
+    if (s.kind == N_RETURN) {
+        if (s.a != NULL) return CFReturn(EvalExpr(env, s.a));
+        return CFReturn(VVoid());
+    }
+
+    if (s.kind == N_GOTO) return CFGoto(s.sval);
+    if (s.kind == N_LABEL) return CFNone();
+
+    Print("HolyC++ runtime error (line %d): unhandled statement kind %d\n", s.line, s.kind);
+    Exit(1);
+}
+
+// ---- function and constructor calls --------------------------------------
+
+Value CallFunction(Node fn, ValueList argValues, Value thisVal) {
+    Env callEnv = Env(G_GLOBALS);
+    if (StrLen(fn.sval2) > 0) {
+        callEnv.this_val = thisVal;
+        callEnv.has_this = TRUE;
+    }
+    I64 n = fn.list1.count;
+    I64 i;
+    for (i = 0; i < n; i++) {
+        Node param = fn.list1.Get(i);
+        Value arg;
+        if (i < argValues.count) arg = argValues.Get(i);
+        else arg = DefaultValueForType(param.type_kind, param.type_class_name);
+        callEnv.Define(param.sval, param.type_kind, param.type_class_name, CoerceToType(arg, param.type_kind, param.type_class_name));
+    }
+    CF cf = ExecBlockStmts(callEnv, fn.a.list1);
+    if (cf.kind == CF_RETURN) return CoerceToType(cf.ret_value, fn.type_kind, fn.type_class_name);
+    if (cf.kind == CF_GOTO) { Print("HolyC++ runtime error: label %s not found in function %s\n", cf.goto_label, fn.sval); Exit(1); }
+    return VVoid();
+}
+
+Value ConstructObject(Node cls, ValueList argValues) {
+    ObjVal obj = MakeInstance(cls);
+    Value v = Value();
+    v.kind = VK_OBJ;
+    v.obj = obj;
+    Node ctor = FindMethod(cls, cls.sval);
+    if (ctor != NULL) CallFunction(ctor, argValues, v);
+    return v;
+}
+
+// ---- program driver -----------------------------------------------------
+
+U0 InitGlobals(Program prog) {
+    G_GLOBALS = Env(NULL);
+    I64 i;
+    for (i = 0; i < prog.globals.count; i++) ExecVarDecl(G_GLOBALS, prog.globals.Get(i));
+}
+
+U0 RunProgram(Program prog) {
+    G_PROG = prog;
+    InitGlobals(prog);
+    Node entry = FindFreeFunc("Main");
+    if (entry == NULL) {
+        Print("HolyC++ link error: no entry point found, define U0 Main() in the target program\n");
+        Exit(1);
+    }
+    ValueList noArgs = ValueList();
+    CallFunction(entry, noArgs, VNull());
+}

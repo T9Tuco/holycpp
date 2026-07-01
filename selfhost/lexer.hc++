@@ -1,0 +1,292 @@
+// lexer.hc++
+//
+// The real HolyC++ lexer, written in HolyC++ itself. This mirrors the
+// lexer inside bootstrap/hcrun.c function for function, the only
+// difference is the host language. hcrun only ever executes this file,
+// it never has to understand HolyC++ syntax beyond what its own small
+// bootstrap grammar already covers.
+
+import "common.hc++";
+
+Bool IsDigitCh(I64 c) {
+    return c >= '0' && c <= '9';
+}
+
+Bool IsHexCh(I64 c) {
+    return IsDigitCh(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+Bool IsAlphaCh(I64 c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
+
+Bool IsAlnumCh(I64 c) {
+    return IsDigitCh(c) || IsAlphaCh(c);
+}
+
+I64 HexDigitValue(I64 c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    return c - 'A' + 10;
+}
+
+I64 ParseHexLiteral(U8* text) {
+    I64 result = 0;
+    I64 n = StrLen(text);
+    I64 i = 2;
+    while (i < n) {
+        result = result * 16 + HexDigitValue(text[i]);
+        i++;
+    }
+    return result;
+}
+
+Token MakeToken(I64 kind, U8* text, I64 ival, F64 fval, I64 line) {
+    Token t = Token();
+    t.kind = kind;
+    t.text = text;
+    t.ival = ival;
+    t.fval = fval;
+    t.line = line;
+    return t;
+}
+
+I64 KeywordKind(U8* text) {
+    if (StrCmp(text, "U0") == 0) return TK_U0;
+    if (StrCmp(text, "U8") == 0) return TK_U8;
+    if (StrCmp(text, "U16") == 0) return TK_U16;
+    if (StrCmp(text, "U32") == 0) return TK_U32;
+    if (StrCmp(text, "U64") == 0) return TK_U64;
+    if (StrCmp(text, "I8") == 0) return TK_I8;
+    if (StrCmp(text, "I16") == 0) return TK_I16;
+    if (StrCmp(text, "I32") == 0) return TK_I32;
+    if (StrCmp(text, "I64") == 0) return TK_I64;
+    if (StrCmp(text, "F64") == 0) return TK_F64;
+    if (StrCmp(text, "Bool") == 0) return TK_BOOL;
+    if (StrCmp(text, "Str") == 0) return TK_STR;
+    if (StrCmp(text, "Auto") == 0) return TK_AUTO;
+    if (StrCmp(text, "class") == 0) return TK_CLASS;
+    if (StrCmp(text, "if") == 0) return TK_IF;
+    if (StrCmp(text, "else") == 0) return TK_ELSE;
+    if (StrCmp(text, "while") == 0) return TK_WHILE;
+    if (StrCmp(text, "do") == 0) return TK_DO;
+    if (StrCmp(text, "for") == 0) return TK_FOR;
+    if (StrCmp(text, "switch") == 0) return TK_SWITCH;
+    if (StrCmp(text, "case") == 0) return TK_CASE;
+    if (StrCmp(text, "default") == 0) return TK_DEFAULT;
+    if (StrCmp(text, "break") == 0) return TK_BREAK;
+    if (StrCmp(text, "continue") == 0) return TK_CONTINUE;
+    if (StrCmp(text, "return") == 0) return TK_RETURN;
+    if (StrCmp(text, "goto") == 0) return TK_GOTO;
+    if (StrCmp(text, "import") == 0) return TK_IMPORT;
+    if (StrCmp(text, "new") == 0) return TK_NEW;
+    if (StrCmp(text, "this") == 0) return TK_THIS;
+    if (StrCmp(text, "TRUE") == 0) return TK_TRUE;
+    if (StrCmp(text, "FALSE") == 0) return TK_FALSE;
+    if (StrCmp(text, "NULL") == 0) return TK_NULLK;
+    return TK_IDENT;
+}
+
+class Lexer {
+    U8* source;
+    I64 len;
+    I64 pos;
+    I64 line;
+    TokenList tokens;
+
+    U0 Lexer(U8* src) {
+        this.source = src;
+        this.len = StrLen(src);
+        this.pos = 0;
+        this.line = 1;
+        this.tokens = TokenList();
+    }
+
+    Bool AtEnd() {
+        return this.pos >= this.len;
+    }
+
+    I64 PeekAt(I64 offset) {
+        I64 idx = this.pos + offset;
+        if (idx >= this.len) return 0;
+        return this.source[idx];
+    }
+
+    I64 Peek() {
+        return this.PeekAt(0);
+    }
+
+    I64 Advance() {
+        I64 c = this.source[this.pos];
+        this.pos++;
+        if (c == '\n') this.line++;
+        return c;
+    }
+
+    U0 LexString() {
+        I64 startLine = this.line;
+        U8* result = "";
+        this.Advance();
+        while (!this.AtEnd() && this.Peek() != '"') {
+            I64 c = this.Advance();
+            if (c == '\\') {
+                I64 e = this.Advance();
+                if (e == 'n') result = result + "\n";
+                else if (e == 't') result = result + "\t";
+                else if (e == 'r') result = result + "\r";
+                else if (e == '\\') result = result + "\\";
+                else if (e == '"') result = result + "\"";
+                else if (e == '\'') result = result + "'";
+                else Print("HolyC++ lexer error (line %d): unknown escape sequence\n", this.line);
+            } else {
+                result = result + SubStr(this.source, this.pos - 1, 1);
+            }
+        }
+        this.Advance();
+        this.tokens.Push(MakeToken(TK_STRING, result, 0, 0.0, startLine));
+    }
+
+    U0 LexChar() {
+        I64 line = this.line;
+        this.Advance();
+        I64 value;
+        if (this.Peek() == '\\') {
+            this.Advance();
+            I64 e = this.Advance();
+            if (e == 'n') value = 10;
+            else if (e == 't') value = 9;
+            else if (e == 'r') value = 13;
+            else if (e == '\\') value = 92;
+            else if (e == '\'') value = 39;
+            else value = e;
+        } else {
+            value = this.Advance();
+        }
+        this.Advance();
+        this.tokens.Push(MakeToken(TK_CHAR, "", value, 0.0, line));
+    }
+
+    U0 LexNumber() {
+        I64 line = this.line;
+        I64 start = this.pos - 1;
+        Bool isFloat = FALSE;
+
+        if (this.source[start] == '0' && (this.Peek() == 'x' || this.Peek() == 'X')) {
+            this.Advance();
+            while (IsHexCh(this.Peek())) this.Advance();
+            U8* text = SubStr(this.source, start, this.pos - start);
+            this.tokens.Push(MakeToken(TK_INT, text, ParseHexLiteral(text), 0.0, line));
+            return;
+        }
+
+        while (IsDigitCh(this.Peek())) this.Advance();
+        if (this.Peek() == '.' && IsDigitCh(this.PeekAt(1))) {
+            isFloat = TRUE;
+            this.Advance();
+            while (IsDigitCh(this.Peek())) this.Advance();
+        }
+        U8* text = SubStr(this.source, start, this.pos - start);
+        if (isFloat) this.tokens.Push(MakeToken(TK_FLOAT, text, 0, ToF64(text), line));
+        else this.tokens.Push(MakeToken(TK_INT, text, ToI64(text), 0.0, line));
+    }
+
+    U0 LexIdent() {
+        I64 line = this.line;
+        I64 start = this.pos - 1;
+        while (IsAlnumCh(this.Peek())) this.Advance();
+        U8* text = SubStr(this.source, start, this.pos - start);
+        this.tokens.Push(MakeToken(KeywordKind(text), text, 0, 0.0, line));
+    }
+
+    Bool TryTwoChar(I64 c) {
+        I64 line = this.line;
+        I64 n = this.Peek();
+        if (c == '=' && n == '=') { this.Advance(); this.tokens.Push(MakeToken(TK_EQ, "==", 0, 0.0, line)); return TRUE; }
+        if (c == '!' && n == '=') { this.Advance(); this.tokens.Push(MakeToken(TK_NEQ, "!=", 0, 0.0, line)); return TRUE; }
+        if (c == '<' && n == '=') { this.Advance(); this.tokens.Push(MakeToken(TK_LE, "<=", 0, 0.0, line)); return TRUE; }
+        if (c == '>' && n == '=') { this.Advance(); this.tokens.Push(MakeToken(TK_GE, ">=", 0, 0.0, line)); return TRUE; }
+        if (c == '&' && n == '&') { this.Advance(); this.tokens.Push(MakeToken(TK_ANDAND, "&&", 0, 0.0, line)); return TRUE; }
+        if (c == '|' && n == '|') { this.Advance(); this.tokens.Push(MakeToken(TK_OROR, "||", 0, 0.0, line)); return TRUE; }
+        if (c == '+' && n == '=') { this.Advance(); this.tokens.Push(MakeToken(TK_PLUSEQ, "+=", 0, 0.0, line)); return TRUE; }
+        if (c == '*' && n == '=') { this.Advance(); this.tokens.Push(MakeToken(TK_STAREQ, "*=", 0, 0.0, line)); return TRUE; }
+        if (c == '/' && n == '=') { this.Advance(); this.tokens.Push(MakeToken(TK_SLASHEQ, "/=", 0, 0.0, line)); return TRUE; }
+        if (c == '%' && n == '=') { this.Advance(); this.tokens.Push(MakeToken(TK_PERCENTEQ, "%=", 0, 0.0, line)); return TRUE; }
+        if (c == '<' && n == '<') { this.Advance(); this.tokens.Push(MakeToken(TK_SHL, "<<", 0, 0.0, line)); return TRUE; }
+        if (c == '>' && n == '>') { this.Advance(); this.tokens.Push(MakeToken(TK_SHR, ">>", 0, 0.0, line)); return TRUE; }
+        if (c == '+' && n == '+') { this.Advance(); this.tokens.Push(MakeToken(TK_INC, "++", 0, 0.0, line)); return TRUE; }
+        return FALSE;
+    }
+
+    U0 LexSymbol(I64 c) {
+        I64 line = this.line;
+        if (this.TryTwoChar(c)) return;
+
+        if (c == '-') {
+            if (this.Peek() == '=') { this.Advance(); this.tokens.Push(MakeToken(TK_MINUSEQ, "-=", 0, 0.0, line)); return; }
+            if (this.Peek() == '-') { this.Advance(); this.tokens.Push(MakeToken(TK_DEC, "--", 0, 0.0, line)); return; }
+            this.tokens.Push(MakeToken(TK_MINUS, "-", 0, 0.0, line));
+            return;
+        }
+
+        if (c == '(') { this.tokens.Push(MakeToken(TK_LPAREN, "(", 0, 0.0, line)); return; }
+        if (c == ')') { this.tokens.Push(MakeToken(TK_RPAREN, ")", 0, 0.0, line)); return; }
+        if (c == '{') { this.tokens.Push(MakeToken(TK_LBRACE, "{", 0, 0.0, line)); return; }
+        if (c == '}') { this.tokens.Push(MakeToken(TK_RBRACE, "}", 0, 0.0, line)); return; }
+        if (c == '[') { this.tokens.Push(MakeToken(TK_LBRACKET, "[", 0, 0.0, line)); return; }
+        if (c == ']') { this.tokens.Push(MakeToken(TK_RBRACKET, "]", 0, 0.0, line)); return; }
+        if (c == ';') { this.tokens.Push(MakeToken(TK_SEMI, ";", 0, 0.0, line)); return; }
+        if (c == ',') { this.tokens.Push(MakeToken(TK_COMMA, ",", 0, 0.0, line)); return; }
+        if (c == '.') { this.tokens.Push(MakeToken(TK_DOT, ".", 0, 0.0, line)); return; }
+        if (c == ':') { this.tokens.Push(MakeToken(TK_COLON, ":", 0, 0.0, line)); return; }
+        if (c == '?') { this.tokens.Push(MakeToken(TK_QUESTION, "?", 0, 0.0, line)); return; }
+        if (c == '+') { this.tokens.Push(MakeToken(TK_PLUS, "+", 0, 0.0, line)); return; }
+        if (c == '*') { this.tokens.Push(MakeToken(TK_STAR, "*", 0, 0.0, line)); return; }
+        if (c == '/') { this.tokens.Push(MakeToken(TK_SLASH, "/", 0, 0.0, line)); return; }
+        if (c == '%') { this.tokens.Push(MakeToken(TK_PERCENT, "%", 0, 0.0, line)); return; }
+        if (c == '=') { this.tokens.Push(MakeToken(TK_ASSIGN, "=", 0, 0.0, line)); return; }
+        if (c == '<') { this.tokens.Push(MakeToken(TK_LT, "<", 0, 0.0, line)); return; }
+        if (c == '>') { this.tokens.Push(MakeToken(TK_GT, ">", 0, 0.0, line)); return; }
+        if (c == '!') { this.tokens.Push(MakeToken(TK_NOT, "!", 0, 0.0, line)); return; }
+        if (c == '&') { this.tokens.Push(MakeToken(TK_AMP, "&", 0, 0.0, line)); return; }
+        if (c == '|') { this.tokens.Push(MakeToken(TK_PIPE, "|", 0, 0.0, line)); return; }
+        if (c == '^') { this.tokens.Push(MakeToken(TK_CARET, "^", 0, 0.0, line)); return; }
+        if (c == '~') { this.tokens.Push(MakeToken(TK_TILDE, "~", 0, 0.0, line)); return; }
+
+        Print("HolyC++ lexer error (line %d): unexpected character\n", line);
+        Exit(1);
+    }
+
+    TokenList Tokenize() {
+        while (!this.AtEnd()) {
+            I64 c = this.Advance();
+
+            if (c == ' ' || c == '\t' || c == '\r' || c == '\n') continue;
+
+            if (c == '/' && this.Peek() == '/') {
+                while (!this.AtEnd() && this.Peek() != '\n') this.Advance();
+                continue;
+            }
+            if (c == '/' && this.Peek() == '*') {
+                this.Advance();
+                while (!this.AtEnd() && !(this.Peek() == '*' && this.PeekAt(1) == '/')) this.Advance();
+                this.Advance();
+                this.Advance();
+                continue;
+            }
+
+            if (c == '"') { this.pos--; this.LexString(); continue; }
+            if (c == '\'') { this.pos--; this.LexChar(); continue; }
+            if (IsDigitCh(c)) { this.LexNumber(); continue; }
+            if (IsAlphaCh(c)) { this.LexIdent(); continue; }
+
+            this.LexSymbol(c);
+        }
+        this.tokens.Push(MakeToken(TK_EOF, "", 0, 0.0, this.line));
+        return this.tokens;
+    }
+};
+
+TokenList Tokenize(U8* source) {
+    Lexer lx = Lexer(source);
+    return lx.Tokenize();
+}

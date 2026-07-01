@@ -1,0 +1,35 @@
+// compiler.hc++
+//
+// Entry point for the self hosted HolyC++ toolchain. Run it through
+// the bootstrap runtime, passing the program to execute as an extra
+// argument:
+//
+//   bootstrap/hcrun selfhost/compiler.hc++ examples/hello.hc++
+//
+// hcrun only ever has to understand this file (and everything it
+// imports) once, after that every piece of actual language work,
+// lexing, parsing and evaluating a target program, happens inside
+// HolyC++ code, running on top of HolyC++ code.
+//
+// Known limitation: this self hosted toolchain does not yet resolve
+// import statements inside the target program itself (hcrun does,
+// directly, for its own bootstrap purposes). Run multi file programs
+// through hcrun directly until that lands. See docs/differences and
+// README.md.
+
+import "common.hc++";
+import "lexer.hc++";
+import "parser.hc++";
+import "interpreter.hc++";
+
+U0 Main() {
+    if (ArgCount() < 1) {
+        Print("usage: hcrun compiler.hc++ program.hc++\n");
+        Exit(1);
+    }
+    U8* path = Arg(0);
+    U8* source = ReadFile(path);
+    TokenList tokens = Tokenize(source);
+    Program prog = ParseProgram(tokens);
+    RunProgram(prog);
+}

@@ -1,0 +1,270 @@
+// common.hc++
+//
+// Shared constants and data structures for the self hosted HolyC++
+// toolchain: token kinds, AST node kinds, type kinds, and the Token,
+// TokenList, Node and NodeList classes that lexer.hc++, parser.hc++
+// and interpreter.hc++ all build on.
+//
+// HolyC++ (as implemented by bootstrap/hcrun.c) only has fixed size
+// arrays, there is no dynamic growth built into the language. Every
+// list here therefore reserves a generous fixed capacity up front.
+// This is a known, documented limit of the self hosted toolchain, see
+// README.md.
+
+// ---- token kinds --------------------------------------------------
+
+I64 TK_INT = 0;
+I64 TK_FLOAT = 1;
+I64 TK_STRING = 2;
+I64 TK_CHAR = 3;
+I64 TK_IDENT = 4;
+I64 TK_U0 = 5;
+I64 TK_U8 = 6;
+I64 TK_U16 = 7;
+I64 TK_U32 = 8;
+I64 TK_U64 = 9;
+I64 TK_I8 = 10;
+I64 TK_I16 = 11;
+I64 TK_I32 = 12;
+I64 TK_I64 = 13;
+I64 TK_F64 = 14;
+I64 TK_BOOL = 15;
+I64 TK_STR = 16;
+I64 TK_AUTO = 17;
+I64 TK_CLASS = 18;
+I64 TK_IF = 19;
+I64 TK_ELSE = 20;
+I64 TK_WHILE = 21;
+I64 TK_DO = 22;
+I64 TK_FOR = 23;
+I64 TK_SWITCH = 24;
+I64 TK_CASE = 25;
+I64 TK_DEFAULT = 26;
+I64 TK_BREAK = 27;
+I64 TK_CONTINUE = 28;
+I64 TK_RETURN = 29;
+I64 TK_GOTO = 30;
+I64 TK_IMPORT = 31;
+I64 TK_NEW = 32;
+I64 TK_THIS = 33;
+I64 TK_TRUE = 34;
+I64 TK_FALSE = 35;
+I64 TK_NULLK = 36;
+I64 TK_LPAREN = 37;
+I64 TK_RPAREN = 38;
+I64 TK_LBRACE = 39;
+I64 TK_RBRACE = 40;
+I64 TK_LBRACKET = 41;
+I64 TK_RBRACKET = 42;
+I64 TK_SEMI = 43;
+I64 TK_COMMA = 44;
+I64 TK_DOT = 45;
+I64 TK_COLON = 46;
+I64 TK_QUESTION = 47;
+I64 TK_PLUS = 48;
+I64 TK_MINUS = 49;
+I64 TK_STAR = 50;
+I64 TK_SLASH = 51;
+I64 TK_PERCENT = 52;
+I64 TK_ASSIGN = 53;
+I64 TK_PLUSEQ = 54;
+I64 TK_MINUSEQ = 55;
+I64 TK_STAREQ = 56;
+I64 TK_SLASHEQ = 57;
+I64 TK_PERCENTEQ = 58;
+I64 TK_EQ = 59;
+I64 TK_NEQ = 60;
+I64 TK_LT = 61;
+I64 TK_LE = 62;
+I64 TK_GT = 63;
+I64 TK_GE = 64;
+I64 TK_ANDAND = 65;
+I64 TK_OROR = 66;
+I64 TK_NOT = 67;
+I64 TK_AMP = 68;
+I64 TK_PIPE = 69;
+I64 TK_CARET = 70;
+I64 TK_TILDE = 71;
+I64 TK_SHL = 72;
+I64 TK_SHR = 73;
+I64 TK_INC = 74;
+I64 TK_DEC = 75;
+I64 TK_EOF = 76;
+
+// ---- AST node kinds -------------------------------------------------
+
+I64 N_INT = 0;
+I64 N_FLOAT = 1;
+I64 N_STRING = 2;
+I64 N_CHAR = 3;
+I64 N_BOOL = 4;
+I64 N_NULLK = 5;
+I64 N_THIS = 6;
+I64 N_IDENT = 7;
+I64 N_ASSIGN = 8;
+I64 N_COMPOUND = 9;
+I64 N_BINARY = 10;
+I64 N_LOGICAL = 11;
+I64 N_UNARY = 12;
+I64 N_PREINC = 13;
+I64 N_PREDEC = 14;
+I64 N_POSTINC = 15;
+I64 N_POSTDEC = 16;
+I64 N_CALL = 17;
+I64 N_NEWCALL = 18;
+I64 N_INDEX = 19;
+I64 N_MEMBER = 20;
+I64 N_TERNARY = 21;
+I64 N_ARRAYLIT = 22;
+I64 N_EXPRSTMT = 23;
+I64 N_VARDECL = 24;
+I64 N_DECLITEM = 25;
+I64 N_BLOCK = 26;
+I64 N_IF = 27;
+I64 N_WHILE = 28;
+I64 N_DOWHILE = 29;
+I64 N_FOR = 30;
+I64 N_SWITCH = 31;
+I64 N_CASE = 32;
+I64 N_BREAK = 33;
+I64 N_CONTINUE = 34;
+I64 N_RETURN = 35;
+I64 N_GOTO = 36;
+I64 N_LABEL = 37;
+I64 N_CLASSDECL = 38;
+I64 N_FUNCDECL = 39;
+I64 N_FIELD = 40;
+I64 N_PARAM = 41;
+
+// ---- type kinds -------------------------------------------------------
+
+I64 TY_U0 = 0;
+I64 TY_U8 = 1;
+I64 TY_U16 = 2;
+I64 TY_U32 = 3;
+I64 TY_U64 = 4;
+I64 TY_I8 = 5;
+I64 TY_I16 = 6;
+I64 TY_I32 = 7;
+I64 TY_I64 = 8;
+I64 TY_F64 = 9;
+I64 TY_BOOL = 10;
+I64 TY_STR = 11;
+I64 TY_AUTO = 12;
+I64 TY_CLASST = 13;
+
+// ---- capacity limits ----------------------------------------------
+
+I64 MAX_TOKENS = 50000;
+I64 MAX_NODES_PER_LIST = 4096;
+
+// ---- tokens -----------------------------------------------------------
+
+class Token {
+    I64 kind;
+    U8* text;
+    I64 ival;
+    F64 fval;
+    I64 line;
+
+    U0 Token() {
+        this.text = "";
+        this.ival = 0;
+        this.fval = 0.0;
+        this.line = 0;
+    }
+};
+
+class TokenList {
+    Token items[50000];
+    I64 count;
+
+    U0 TokenList() {
+        this.count = 0;
+    }
+
+    U0 Push(Token t) {
+        this.items[this.count] = t;
+        this.count++;
+    }
+
+    Token Get(I64 i) {
+        return this.items[i];
+    }
+};
+
+// ---- AST nodes -------------------------------------------------------
+//
+// One node shape covers every expression and statement kind, tagged by
+// "kind". Which fields matter depends on kind, see docs/language_spec
+// for the surface grammar and bootstrap/hcrun.c for the twin
+// implementation this one mirrors.
+
+class NodeList {
+    Node items[4096];
+    I64 count;
+
+    U0 NodeList() {
+        this.count = 0;
+    }
+
+    U0 Push(Node n) {
+        this.items[this.count] = n;
+        this.count++;
+    }
+
+    Node Get(I64 i) {
+        return this.items[i];
+    }
+};
+
+class Node {
+    I64 kind;
+    I64 line;
+
+    I64 ival;
+    F64 fval;
+    U8* sval;
+    U8* sval2;
+    Bool bval;
+
+    I64 type_kind;
+    U8* type_class_name;
+    I64 array_size;
+
+    Node a;
+    Node b;
+    Node c;
+    Node d;
+
+    NodeList list1;
+    NodeList list2;
+
+    U0 Node() {
+        this.sval = "";
+        this.sval2 = "";
+        this.type_class_name = "";
+        this.array_size = 0;
+        this.list1 = NodeList();
+        this.list2 = NodeList();
+    }
+};
+
+// A parsed program: every class, free function and global variable
+// declaration, in source order. Classes are always reference types in
+// HolyC++, so passing a Program into ParseTopLevel and mutating its
+// lists there is visible to the caller, there is no need for output
+// parameters or a return value carrying three separate lists.
+
+class Program {
+    NodeList classes;
+    NodeList funcs;
+    NodeList globals;
+
+    U0 Program() {
+        this.classes = NodeList();
+        this.funcs = NodeList();
+        this.globals = NodeList();
+    }
+};
+

@@ -544,6 +544,7 @@ typedef struct {
 typedef struct {
     TypeInfo type;
     char *name;
+    int array_size; /* 0 when the field is not an array */
 } FieldDecl;
 
 typedef struct ClassDef {
@@ -1066,11 +1067,19 @@ static void p_class_decl(Parser *p, Program *prog) {
             FieldDecl *field = calloc(1, sizeof(FieldDecl));
             field->type = ty;
             field->name = own_str(member_name->text);
+            if (p_match(p, TK_LBRACKET)) {
+                field->array_size = (int)p_expect(p, TK_INT, "array size")->ival;
+                p_expect(p, TK_RBRACKET, "]");
+            }
             vec_push(cls->fields, field);
             while (p_match(p, TK_COMMA)) {
                 FieldDecl *more = calloc(1, sizeof(FieldDecl));
                 more->type = ty;
                 more->name = own_str(p_expect(p, TK_IDENT, "field name")->text);
+                if (p_match(p, TK_LBRACKET)) {
+                    more->array_size = (int)p_expect(p, TK_INT, "array size")->ival;
+                    p_expect(p, TK_RBRACKET, "]");
+                }
                 vec_push(cls->fields, more);
             }
             p_expect(p, TK_SEMI, ";");
@@ -1212,6 +1221,8 @@ static Binding *env_define(Env *e, const char *name, TypeInfo type, Value value)
 
 static Program *G_PROG;
 static Env *G_GLOBALS;
+static int G_ARGC = 0;
+static char **G_ARGV = NULL;
 
 static ClassDef *find_class(const char *name) {
     if (!name) return NULL;
@@ -1253,31 +1264,27 @@ static void link_classes(void) {
 /* Flattened field list, base class fields first, used to build a fresh
    ObjVal whenever a class is instantiated. */
 
-static void collect_fields(ClassDef *cls, Vec *out_names, Vec *out_types) {
+static void collect_fields(ClassDef *cls, Vec *out_fields) {
     if (!cls) return;
-    collect_fields(cls->base, out_names, out_types);
-    for (int i = 0; i < cls->fields->count; i++) {
-        FieldDecl *f = vec_get(cls->fields, i);
-        vec_push(out_names, f->name);
-        vec_push(out_types, &f->type);
-    }
+    collect_fields(cls->base, out_fields);
+    for (int i = 0; i < cls->fields->count; i++) vec_push(out_fields, vec_get(cls->fields, i));
 }
 
 static Value default_value_for_type(TypeInfo ty);
+static Value make_array_value(TypeInfo elem_type, int length);
 
 static ObjVal *make_instance(ClassDef *cls) {
-    Vec *names = vec_new();
-    Vec *types = vec_new();
-    collect_fields(cls, names, types);
+    Vec *fields = vec_new();
+    collect_fields(cls, fields);
     ObjVal *obj = calloc(1, sizeof(ObjVal));
     obj->cls = cls;
-    obj->field_count = names->count;
-    obj->field_names = calloc((size_t)names->count, sizeof(char *));
-    obj->field_values = calloc((size_t)names->count, sizeof(Value));
-    for (int i = 0; i < names->count; i++) {
-        obj->field_names[i] = own_str((char *)vec_get(names, i));
-        TypeInfo *ty = vec_get(types, i);
-        obj->field_values[i] = default_value_for_type(*ty);
+    obj->field_count = fields->count;
+    obj->field_names = calloc((size_t)fields->count, sizeof(char *));
+    obj->field_values = calloc((size_t)fields->count, sizeof(Value));
+    for (int i = 0; i < fields->count; i++) {
+        FieldDecl *f = vec_get(fields, i);
+        obj->field_names[i] = own_str(f->name);
+        obj->field_values[i] = f->array_size > 0 ? make_array_value(f->type, f->array_size) : default_value_for_type(f->type);
     }
     return obj;
 }
@@ -1853,6 +1860,9 @@ static Value call_function(FuncDef *fn, Vec *arg_values, Value *this_val) {
     }
     CF cf = exec_block_stmts(call_env, fn->body->stmts);
     if (cf.kind == CF_RETURN) return coerce_to_type(cf.ret_value, fn->ret_type);
+    if (cf.kind == CF_GOTO) fatal("runtime", 0, "label %s not found in function %s", cf.goto_label, fn->name);
+    if (cf.kind == CF_BREAK) fatal("runtime", 0, "break used outside of a loop or switch in function %s", fn->name);
+    if (cf.kind == CF_CONTINUE) fatal("runtime", 0, "continue used outside of a loop in function %s", fn->name);
     return V_void();
 }
 
@@ -2032,6 +2042,10 @@ static Value call_builtin(const char *name, Vec *args, int line, bool *handled) 
         char *s = value_to_display_string(arg_at(args, 0, line, name));
         Value v = V_str(s); free(s); return v;
     }
+    if (strcmp(name, "Chr") == 0) {
+        char s[2] = { (char)value_as_int(arg_at(args, 0, line, name)), '\0' };
+        return V_str(s);
+    }
 
     if (strcmp(name, "Len") == 0) {
         Value v = arg_at(args, 0, line, name);
@@ -2064,6 +2078,38 @@ static Value call_builtin(const char *name, Vec *args, int line, bool *handled) 
         exit((int)code);
     }
 
+    if (strcmp(name, "ReadFile") == 0) {
+        Value path = arg_at(args, 0, line, name);
+        FILE *f = fopen(path.s, "rb");
+        if (!f) fatal("runtime", line, "ReadFile: cannot open %s", path.s);
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        char *buf = malloc((size_t)size + 1);
+        size_t got = fread(buf, 1, (size_t)size, f);
+        buf[got] = '\0';
+        fclose(f);
+        Value r = V_str(buf);
+        free(buf);
+        return r;
+    }
+    if (strcmp(name, "WriteFile") == 0) {
+        Value path = arg_at(args, 0, line, name);
+        Value content = arg_at(args, 1, line, name);
+        FILE *f = fopen(path.s, "wb");
+        if (!f) fatal("runtime", line, "WriteFile: cannot open %s", path.s);
+        fputs(content.s, f);
+        fclose(f);
+        return V_void();
+    }
+    if (strcmp(name, "ArgCount") == 0) return V_i64(G_ARGC > 2 ? G_ARGC - 2 : 0);
+    if (strcmp(name, "Arg") == 0) {
+        int64_t i = value_as_int(arg_at(args, 0, line, name));
+        int real_index = 2 + (int)i;
+        if (i < 0 || real_index >= G_ARGC) return V_str("");
+        return V_str(G_ARGV[real_index]);
+    }
+
     *handled = false;
     return V_void();
 }
@@ -2082,10 +2128,12 @@ static void init_globals(Program *prog) {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: hcrun program.hc++\n");
+        fprintf(stderr, "usage: hcrun program.hc++ [args...]\n");
         return 1;
     }
     srand((unsigned)time(NULL));
+    G_ARGC = argc;
+    G_ARGV = argv;
 
     StrList visited = {0};
     Vec *tokens = resolve_imports(argv[1], &visited);
