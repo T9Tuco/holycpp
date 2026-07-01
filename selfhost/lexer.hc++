@@ -156,6 +156,7 @@ class Lexer {
             if (e == 'n') value = 10;
             else if (e == 't') value = 9;
             else if (e == 'r') value = 13;
+            else if (e == '0') value = 0;
             else if (e == '\\') value = 92;
             else if (e == '\'') value = 39;
             else value = e;
