@@ -2086,6 +2086,7 @@ static Value call_builtin(const char *name, Vec *args, int line, bool *handled) 
         if (!f) fatal("runtime", line, "ReadFile: cannot open %s", path.s);
         fseek(f, 0, SEEK_END);
         long size = ftell(f);
+        if (size < 0) fatal("runtime", line, "ReadFile: cannot determine size of %s", path.s);
         fseek(f, 0, SEEK_SET);
         char *buf = malloc((size_t)size + 1);
         size_t got = fread(buf, 1, (size_t)size, f);
