@@ -292,7 +292,7 @@ U8* SelfValueToDisplay(Value v) {
     if (v.kind == VK_NULL) return "NULL";
     if (v.kind == VK_VOID) return "";
     if (v.kind == VK_OBJ) return v.obj.cls.sval + "@object";
-    return "array";
+    return "array[" + ToStr(v.arr.length) + "]";
 }
 
 Value CoerceToType(Value v, I64 tk, U8* className) {
