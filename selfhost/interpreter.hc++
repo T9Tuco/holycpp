@@ -589,8 +589,15 @@ Value CallBuiltin(U8* name, ValueList args, I64 line) {
     if (StrCmp(name, "Exit") == 0) Exit(ValueAsInt(args.Get(0)));
     if (StrCmp(name, "ReadFile") == 0) return VStr(ReadFile(args.Get(0).sval));
     if (StrCmp(name, "WriteFile") == 0) { WriteFile(args.Get(0).sval, args.Get(1).sval); return VVoid(); }
-    if (StrCmp(name, "ArgCount") == 0) return VI64(ArgCount());
-    if (StrCmp(name, "Arg") == 0) return VStr(Arg(ValueAsInt(args.Get(0))));
+    // native Arg(0)/ArgCount() still count the target program path that
+    // compiler.hc++'s own Main() consumed, so shift by one here to give
+    // the interpreted program the same view of its own args hcrun would.
+    if (StrCmp(name, "ArgCount") == 0) {
+        I64 n = ArgCount();
+        if (n > 0) return VI64(n - 1);
+        return VI64(0);
+    }
+    if (StrCmp(name, "Arg") == 0) return VStr(Arg(ValueAsInt(args.Get(0)) + 1));
 
     Print("HolyC++ runtime error (line %d): unknown builtin %s\n", line, name);
     Exit(1);
