@@ -2052,6 +2052,7 @@ static Value call_builtin(const char *name, Vec *args, int line, bool *handled) 
         if (v.kind == V_ARRAY) return V_i64(v.arr->length);
         if (v.kind == V_STR) return V_i64((int64_t)strlen(v.s));
         fatal("runtime", line, "Len expects an array or a string");
+        return V_void();
     }
 
     if (strcmp(name, "ReadLn") == 0) {
