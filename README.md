@@ -8,10 +8,12 @@ string) and adds what stock HolyC never had: methods that belong to a
 class, an implicit this inside them, constructors, and single
 inheritance with real virtual dispatch.
 
-Full details live under docs/, start with
-docs/language_spec.md for the language itself and
-docs/differences_from_holyc.md for exactly what changed from stock
-HolyC and why.
+Full details live under docs/: if this is your first HolyC++ program,
+start with docs/tutorial.md, a guided walkthrough of runnable
+examples. docs/language_spec.md is the full language reference,
+docs/grammar.md has the formal EBNF grammar, docs/stdlib.md documents
+every builtin function, and docs/differences_from_holyc.md covers
+exactly what changed from stock HolyC and why.
 
 ## Where this actually runs
 
@@ -102,7 +104,8 @@ and that the self hosted compiler produces the exact same output too.
 
 Running this prints "Rex says Woof", not "Rex makes a sound", even
 though a is declared as a plain Animal: method dispatch always follows
-the object's real class. See docs/classes.md.
+the object's real class. See docs/classes.md for the details, or
+docs/tutorial.md for more worked examples like this one.
 
 ## Documentation
 
