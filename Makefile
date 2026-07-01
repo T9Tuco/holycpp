@@ -2,6 +2,8 @@ CC = gcc
 CFLAGS = std=c11 O2 Wall Wextra
 LIBS = lm
 
+.PHONY: build run test clean
+
 build:
 	$(CC) $(CFLAGS:%=-%) -o bootstrap/hcrun bootstrap/hcrun.c $(LIBS:%=-%)
 
