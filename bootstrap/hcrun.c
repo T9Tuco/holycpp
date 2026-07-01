@@ -362,6 +362,7 @@ static char *read_file(const char *path) {
     if (!f) fatal("io", 0, "cannot open file %s", path);
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
+    if (size < 0) fatal("io", 0, "cannot determine size of file %s", path);
     fseek(f, 0, SEEK_SET);
     char *buf = malloc((size_t)size + 1);
     size_t got = fread(buf, 1, (size_t)size, f);
