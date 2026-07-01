@@ -106,12 +106,12 @@ the object's real class. See docs/classes.md.
 
 ## Documentation
 
-  docs/language_spec.md            the full language reference
-  docs/grammar.md                    the formal EBNF grammar
-  docs/classes.md                     object orientation in depth
-  docs/stdlib.md                       every builtin function
-  docs/tutorial.md                     a guided walkthrough
-  docs/differences_from_holyc.md   exactly what changed from stock HolyC
+    docs/language_spec.md            the full language reference
+    docs/grammar.md                    the formal EBNF grammar
+    docs/classes.md                     object orientation in depth
+    docs/stdlib.md                       every builtin function
+    docs/tutorial.md                     a guided walkthrough
+    docs/differences_from_holyc.md   exactly what changed from stock HolyC
 
 ## License
 
