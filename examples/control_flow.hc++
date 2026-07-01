@@ -1,0 +1,36 @@
+// if/else, while, do while, switch and goto, all in one place.
+
+U0 Main() {
+    I64 n = 7;
+    if (n % 2 == 0) Print("%d is even\n", n);
+    else Print("%d is odd\n", n);
+
+    I64 i = 0;
+    while (i < 3) {
+        Print("while i = %d\n", i);
+        i++;
+    }
+
+    I64 j = 0;
+    do {
+        Print("do while j = %d\n", j);
+        j++;
+    } while (j < 3);
+
+    I64 k;
+    for (k = 0; k < 3; k++) Print("for k = %d\n", k);
+
+    I64 day = 3;
+    switch (day) {
+        case 1: Print("Monday\n"); break;
+        case 2: Print("Tuesday\n"); break;
+        case 3: Print("Wednesday\n"); break;
+        default: Print("some other day\n");
+    }
+
+    I64 attempts = 0;
+    retry:
+    attempts++;
+    Print("attempt %d\n", attempts);
+    if (attempts < 3) goto retry;
+}

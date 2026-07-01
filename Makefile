@@ -9,7 +9,7 @@ run: build
 	./bootstrap/hcrun $(FILE)
 
 test: build
-	python3 tests/run_tests.py
+	tests/run_tests.sh
 
 clean:
 	rm -f bootstrap/hcrun

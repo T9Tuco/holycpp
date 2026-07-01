@@ -1,0 +1,6 @@
+// The traditional first program. Run it with:
+//   bootstrap/hcrun examples/hello.hc++
+
+U0 Main() {
+    Print("Hello, HolyC++ world\n");
+}

@@ -1,0 +1,14 @@
+7 is odd
+while i = 0
+while i = 1
+while i = 2
+do while j = 0
+do while j = 1
+do while j = 2
+for k = 0
+for k = 1
+for k = 2
+Wednesday
+attempt 1
+attempt 2
+attempt 3

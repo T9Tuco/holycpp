@@ -1,0 +1,55 @@
+// Single inheritance with virtual dispatch: Speak always runs the
+// version that belongs to the object's real class, not the type the
+// calling code declares. See docs/classes.md.
+
+class Animal {
+    U8* name;
+    I64 legs;
+
+    U0 Animal(U8* n, I64 l) {
+        this.name = n;
+        this.legs = l;
+    }
+
+    U0 Speak() {
+        Print("%s has %d legs and makes a generic animal sound\n", this.name, this.legs);
+    }
+};
+
+class Dog : Animal {
+    U0 Dog(U8* n) {
+        this.name = n;
+        this.legs = 4;
+    }
+
+    U0 Speak() {
+        Print("%s the dog says Woof\n", this.name);
+    }
+};
+
+class Bird : Animal {
+    U0 Bird(U8* n) {
+        this.name = n;
+        this.legs = 2;
+    }
+
+    U0 Speak() {
+        Print("%s the bird says Tweet\n", this.name);
+    }
+};
+
+U0 Announce(Animal a) {
+    // a is declared as a plain Animal here, but Speak still resolves
+    // to whichever class actually constructed the object.
+    a.Speak();
+}
+
+U0 Main() {
+    Animal generic = Animal("Generic", 6);
+    Dog rex = Dog("Rex");
+    Bird tweety = Bird("Tweety");
+
+    Announce(generic);
+    Announce(rex);
+    Announce(tweety);
+}

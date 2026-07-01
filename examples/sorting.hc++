@@ -1,0 +1,32 @@
+// Bubble sort, chosen for clarity over speed, to show arrays,
+// nested loops and swapping in one small example.
+
+U0 BubbleSort(I64 arr[], I64 n) {
+    I64 i;
+    I64 j;
+    I64 temp;
+    for (i = 0; i < n - 1; i++) {
+        for (j = 0; j < n - 1 - i; j++) {
+            if (arr[j] > arr[j + 1]) {
+                temp = arr[j];
+                arr[j] = arr[j + 1];
+                arr[j + 1] = temp;
+            }
+        }
+    }
+}
+
+U0 PrintArray(I64 arr[], I64 n) {
+    I64 i;
+    for (i = 0; i < n; i++) Print("%d ", arr[i]);
+    Print("\n");
+}
+
+U0 Main() {
+    I64 values[8] = {9, 2, 7, 1, 5, 3, 8, 4};
+    Print("before: ");
+    PrintArray(values, Len(values));
+    BubbleSort(values, Len(values));
+    Print("after:  ");
+    PrintArray(values, Len(values));
+}

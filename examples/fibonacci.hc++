@@ -1,0 +1,14 @@
+// Plain recursion, no memoization, to keep the example readable.
+// See docs/language_spec.md for function declaration syntax.
+
+I64 Fib(I64 n) {
+    if (n < 2) return n;
+    return Fib(n - 1) + Fib(n - 2);
+}
+
+U0 Main() {
+    I64 i;
+    for (i = 0; i < 12; i++) {
+        Print("Fib(%d) = %d\n", i, Fib(i));
+    }
+}
