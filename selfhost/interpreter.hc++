@@ -912,6 +912,8 @@ Value CallFunction(Node fn, ValueList argValues, Value thisVal) {
     CF cf = ExecBlockStmts(callEnv, fn.a.list1);
     if (cf.kind == CF_RETURN) return CoerceToType(cf.ret_value, fn.type_kind, fn.type_class_name);
     if (cf.kind == CF_GOTO) { Print("HolyC++ runtime error: label %s not found in function %s\n", cf.goto_label, fn.sval); Exit(1); }
+    if (cf.kind == CF_BREAK) { Print("HolyC++ runtime error: break used outside of a loop or switch in function %s\n", fn.sval); Exit(1); }
+    if (cf.kind == CF_CONTINUE) { Print("HolyC++ runtime error: continue used outside of a loop in function %s\n", fn.sval); Exit(1); }
     return VVoid();
 }
 
