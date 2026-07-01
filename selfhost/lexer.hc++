@@ -126,19 +126,22 @@ class Lexer {
     U0 LexString() {
         I64 startLine = this.line;
         U8* result = "";
+        Bool truncated = FALSE;
         this.Advance();
         while (!this.AtEnd() && this.Peek() != '"') {
             I64 c = this.Advance();
             if (c == '\\') {
                 I64 e = this.Advance();
+                if (truncated) continue;
                 if (e == 'n') result = result + "\n";
                 else if (e == 't') result = result + "\t";
                 else if (e == 'r') result = result + "\r";
+                else if (e == '0') truncated = TRUE;
                 else if (e == '\\') result = result + "\\";
                 else if (e == '"') result = result + "\"";
                 else if (e == '\'') result = result + "'";
                 else Print("HolyC++ lexer error (line %d): unknown escape sequence\n", this.line);
-            } else {
+            } else if (!truncated) {
                 result = result + SubStr(this.source, this.pos - 1, 1);
             }
         }
