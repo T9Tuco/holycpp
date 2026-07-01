@@ -165,7 +165,10 @@ class Lexer {
             else if (e == '0') value = 0;
             else if (e == '\\') value = 92;
             else if (e == '\'') value = 39;
-            else value = e;
+            else {
+                Print("HolyC++ lexer error (line %d): unknown escape sequence\n", this.line);
+                Exit(1);
+            }
         } else {
             value = this.Advance();
         }
