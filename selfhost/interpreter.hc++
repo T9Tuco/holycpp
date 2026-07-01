@@ -580,6 +580,7 @@ Value CallBuiltin(U8* name, ValueList args, I64 line) {
         if (v.kind == VK_STR) return VI64(StrLen(v.sval));
         Print("HolyC++ runtime error (line %d): Len expects an array or a string\n", line);
         Exit(1);
+        return VVoid();
     }
     if (StrCmp(name, "ReadLn") == 0) return VStr(ReadLn());
     if (StrCmp(name, "RandI64") == 0) return VI64(RandI64(ValueAsInt(args.Get(0)), ValueAsInt(args.Get(1))));
